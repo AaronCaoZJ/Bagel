@@ -754,6 +754,7 @@ class Bagel(PreTrainedModel):
         return unpacked_latent
 
     @torch.no_grad
+        # ...existing code...
     def _forward_flow(
         self,
         x_t: torch.Tensor,
@@ -793,6 +794,7 @@ class Bagel(PreTrainedModel):
         model_pred_img_cache_dic: Optional[Dict[str, Any]] = None,
         model_pred_img_current: Optional[int] = None,
     ):
+        # build base packed_sequence / embeddings (same as before)
         packed_text_embedding = self.language_model.model.embed_tokens(packed_text_ids)
         packed_sequence = packed_text_embedding.new_zeros((sum(packed_seqlens), self.hidden_size))
         packed_sequence[packed_text_indexes] = packed_text_embedding
@@ -812,64 +814,159 @@ class Bagel(PreTrainedModel):
                 "packed_vae_token_indexes": packed_vae_token_indexes,
                 "packed_text_indexes": packed_text_indexes
             }
-        
+
+        # Helper: sequential fallback (original safe behaviour)
+        def _sequential_forward():
+            if self.language_model.model.enable_taylorseer:
+                self.language_model.model.cache_dic = model_pred_cache_dic
+                self.language_model.model.current = model_pred_current
+
+            output = self.language_model.forward_inference(
+                packed_query_sequence=packed_sequence,
+                query_lens=packed_seqlens,
+                packed_query_position_ids=packed_position_ids,
+                packed_query_indexes=packed_indexes,
+                past_key_values=past_key_values,
+                key_values_lens=key_values_lens,
+                packed_key_value_indexes=packed_key_value_indexes,
+                update_past_key_values=False,
+                is_causal=False,
+                **extra_inputs,
+            )
+            v_t = self.llm2vae(output.packed_query_sequence)
+            v_t = v_t[packed_vae_token_indexes]
+
+            cfg_text_v_t = None
+            cfg_img_v_t = None
+
+            # cfg_text
+            if cfg_text_scale > 1.0:
+                if self.language_model.model.enable_taylorseer:
+                    self.language_model.model.cache_dic = model_pred_text_cache_dic
+                    self.language_model.model.current = model_pred_text_current
+                cfg_text_output = self.language_model.forward_inference(
+                    packed_query_sequence=packed_sequence,
+                    query_lens=packed_seqlens,
+                    packed_query_position_ids=cfg_text_packed_position_ids,
+                    packed_query_indexes=cfg_text_packed_query_indexes,
+                    past_key_values=cfg_text_past_key_values,
+                    key_values_lens=cfg_text_key_values_lens,
+                    packed_key_value_indexes=cfg_text_packed_key_value_indexes,
+                    update_past_key_values=False,
+                    is_causal=False,
+                    **extra_inputs,
+                )
+                cfg_text_v_t = self.llm2vae(cfg_text_output.packed_query_sequence)[packed_vae_token_indexes]
+
+            # cfg_img
+            if cfg_img_scale > 1.0:
+                if self.language_model.model.enable_taylorseer:
+                    self.language_model.model.cache_dic = model_pred_img_cache_dic
+                    self.language_model.model.current = model_pred_img_current
+                cfg_img_output = self.language_model.forward_inference(
+                    packed_query_sequence=packed_sequence,
+                    query_lens=packed_seqlens,
+                    packed_query_position_ids=cfg_img_packed_position_ids,
+                    packed_query_indexes=cfg_img_packed_query_indexes,
+                    past_key_values=cfg_img_past_key_values,
+                    key_values_lens=cfg_img_key_values_lens,
+                    packed_key_value_indexes=cfg_img_packed_key_value_indexes,
+                    update_past_key_values=False,
+                    is_causal=False,
+                    **extra_inputs,
+                )
+                cfg_img_v_t = self.llm2vae(cfg_img_output.packed_query_sequence)[packed_vae_token_indexes]
+
+            return v_t, cfg_text_v_t, cfg_img_v_t
+
+        # Decide whether batched single-forward is safe:
+        batched_allowed = True
+        # not safe if any variant provides its own past (different from base)
+        if (cfg_text_past_key_values is not None and cfg_text_past_key_values is not past_key_values) or \
+            (cfg_img_past_key_values is not None and cfg_img_past_key_values is not past_key_values):
+            batched_allowed = False
+        # not safe if taylorseer cache is required (we don't merge caches here)
         if self.language_model.model.enable_taylorseer:
-            self.language_model.model.cache_dic = model_pred_cache_dic
-            self.language_model.model.current = model_pred_current
+            batched_allowed = False
+        # not safe if packed_query indexing semantics are complex -- conservative check
+        if (cfg_text_packed_query_indexes is not None and cfg_text_packed_query_indexes.shape != packed_indexes.shape) or \
+            (cfg_img_packed_query_indexes is not None and cfg_img_packed_query_indexes.shape != packed_indexes.shape):
+            # still could be OK, but be conservative
+            batched_allowed = False
 
-        output = self.language_model.forward_inference(
-            packed_query_sequence=packed_sequence,
-            query_lens=packed_seqlens,
-            packed_query_position_ids=packed_position_ids,
-            packed_query_indexes=packed_indexes,
-            past_key_values=past_key_values,
-            key_values_lens=key_values_lens,
-            packed_key_value_indexes=packed_key_value_indexes,
-            update_past_key_values=False,
-            is_causal=False,
-            **extra_inputs,
-        )
-        v_t = self.llm2vae(output.packed_query_sequence)
-        v_t = v_t[packed_vae_token_indexes]
+        # If not safe, do sequential (guaranteed-correct)
+        if not batched_allowed:
+            v_t, cfg_text_v_t, cfg_img_v_t = _sequential_forward()
+        else:
+            # Build variants: we will replicate packed_sequence and supply per-variant position/index tensors.
+            variants_seqs = []
+            variants_q_lens = []
+            variants_pos_ids = []
+            variants_q_indexes = []
+            # base
+            variants_seqs.append(packed_sequence)
+            variants_q_lens.append(packed_seqlens)
+            variants_pos_ids.append(packed_position_ids)
+            variants_q_indexes.append(packed_indexes)
+            # cfg_text
+            if cfg_text_scale > 1.0:
+                variants_seqs.append(packed_sequence)  # same embeddings
+                variants_q_lens.append(packed_seqlens)
+                variants_pos_ids.append(cfg_text_packed_position_ids)
+                variants_q_indexes.append(cfg_text_packed_query_indexes)
+            # cfg_img
+            if cfg_img_scale > 1.0:
+                variants_seqs.append(packed_sequence)
+                variants_q_lens.append(packed_seqlens)
+                variants_pos_ids.append(cfg_img_packed_position_ids)
+                variants_q_indexes.append(cfg_img_packed_query_indexes)
 
-        if cfg_text_scale > 1.0:
-            if self.language_model.model.enable_taylorseer:
-                self.language_model.model.cache_dic = model_pred_text_cache_dic
-                self.language_model.model.current = model_pred_text_current
-            cfg_text_output = self.language_model.forward_inference(
-                packed_query_sequence=packed_sequence,
-                query_lens=packed_seqlens,
-                packed_query_position_ids=cfg_text_packed_position_ids,
-                packed_query_indexes=cfg_text_packed_query_indexes,
-                past_key_values=cfg_text_past_key_values,
-                key_values_lens=cfg_text_key_values_lens,
-                packed_key_value_indexes=cfg_text_packed_key_value_indexes,
-                update_past_key_values=False,
-                is_causal=False,
-                **extra_inputs,
-            )
-            cfg_text_v_t = self.llm2vae(cfg_text_output.packed_query_sequence)
-            cfg_text_v_t = cfg_text_v_t[packed_vae_token_indexes]
+            # concat along batch-like (sequence) dim
+            big_packed_query_sequence = torch.cat(variants_seqs, dim=0)
+            big_query_lens = torch.cat(variants_q_lens, dim=0)
+            big_packed_query_position_ids = torch.cat(variants_pos_ids, dim=0)
+            big_packed_query_indexes = torch.cat(variants_q_indexes, dim=0)
 
-        if cfg_img_scale > 1.0:
-            if self.language_model.model.enable_taylorseer:
-                self.language_model.model.cache_dic = model_pred_img_cache_dic
-                self.language_model.model.current = model_pred_img_current
-            cfg_img_output = self.language_model.forward_inference(
-                packed_query_sequence=packed_sequence,
-                query_lens=packed_seqlens,
-                packed_query_position_ids=cfg_img_packed_position_ids,
-                packed_query_indexes=cfg_img_packed_query_indexes,
-                past_key_values=cfg_img_past_key_values,
-                key_values_lens=cfg_img_key_values_lens,
-                packed_key_value_indexes=cfg_img_packed_key_value_indexes,
-                update_past_key_values=False,
-                is_causal=False,
-                **extra_inputs,
-            )
-            cfg_img_v_t = self.llm2vae(cfg_img_output.packed_query_sequence)
-            cfg_img_v_t = cfg_img_v_t[packed_vae_token_indexes]
+            # past_key_values is None or identical across variants in this branch.
+            big_past = past_key_values
 
+            # packed_key_value_indexes / key_values_lens: when pasts are identical we can reuse
+            big_packed_key_value_indexes = packed_key_value_indexes
+            big_key_values_lens = key_values_lens
+
+            # perform single forward under autocast
+            device = big_packed_query_sequence.device
+            with torch.amp.autocast(device_type=device.type, enabled=True, dtype=torch.bfloat16):
+                big_output = self.language_model.forward_inference(
+                    packed_query_sequence=big_packed_query_sequence,
+                    query_lens=big_query_lens,
+                    packed_query_position_ids=big_packed_query_position_ids,
+                    packed_query_indexes=big_packed_query_indexes,
+                    past_key_values=big_past,
+                    key_values_lens=big_key_values_lens,
+                    packed_key_value_indexes=big_packed_key_value_indexes,
+                    update_past_key_values=False,
+                    is_causal=False,
+                    **extra_inputs,
+                )
+
+            # split outputs back to variants
+            splits = [vs.shape[0] for vs in variants_seqs]
+            outs = big_output.packed_query_sequence.split(splits, dim=0)
+            base_out = outs[0]
+            v_t = self.llm2vae(base_out)[packed_vae_token_indexes]
+            cfg_text_v_t = None
+            cfg_img_v_t = None
+            idx = 1
+            if cfg_text_scale > 1.0:
+                cfg_text_out = outs[idx]
+                cfg_text_v_t = self.llm2vae(cfg_text_out)[packed_vae_token_indexes]
+                idx += 1
+            if cfg_img_scale > 1.0:
+                cfg_img_out = outs[idx]
+                cfg_img_v_t = self.llm2vae(cfg_img_out)[packed_vae_token_indexes]
+
+        # --- CFG combine logic (unchanged) ---
         if cfg_text_scale > 1.0:
             if cfg_renorm_type == "text_channel":
                 v_t_text_ = cfg_text_v_t + cfg_text_scale * (v_t - cfg_text_v_t)
@@ -883,13 +980,12 @@ class Bagel(PreTrainedModel):
                     v_t = v_t_text
             else:
                 v_t_text_ = cfg_text_v_t + cfg_text_scale * (v_t - cfg_text_v_t)
-                
+
                 if cfg_img_scale > 1.0:
                     v_t_ = cfg_img_v_t + cfg_img_scale * (v_t_text_ - cfg_img_v_t)
                 else:
                     v_t_ = v_t_text_
 
-                # NOTE norm is computed over all dimensions, thus currently only supports batch_size = 1 with navit
                 if cfg_renorm_type == "global":
                     norm_v_t = torch.norm(v_t)
                     norm_v_t_ = torch.norm(v_t_)
@@ -900,9 +996,6 @@ class Bagel(PreTrainedModel):
                     raise NotImplementedError(f"{cfg_renorm_type} is not suppoprted")
                 scale = (norm_v_t / (norm_v_t_ + 1e-8)).clamp(min=cfg_renorm_min, max=1.0)
                 v_t = v_t_ * scale
-        else:
-            # No CFG
-            pass
 
         return v_t
 

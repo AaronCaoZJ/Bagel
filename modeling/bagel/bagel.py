@@ -998,6 +998,7 @@ class Bagel(PreTrainedModel):
                 v_t = v_t_ * scale
 
         return v_t
+    
 
     def prepare_start_tokens(self, curr_kvlens, curr_rope, new_token_ids):
         packed_start_tokens, packed_key_value_indexes = list(), list()

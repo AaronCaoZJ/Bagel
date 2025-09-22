@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import math
 from typing import List, Tuple, Optional, Dict, Any
 
 import torch
@@ -676,12 +677,22 @@ class Bagel(PreTrainedModel):
         cfg_type: str = "parallel",
         # cache_args
         enable_taylorseer=False,
-    ):
+        enable_learn2cache=False,
+        monitor_layer_diffs=False,
+        monitor_interval: int = 1,
+        **kargs,
+        ):
         if enable_taylorseer:
             self.language_model.model.enable_taylorseer = True
-            model_pred_cache_dic, model_pred_current = cache_init(self, num_timesteps)
-            model_pred_text_cache_dic, model_pred_text_current = cache_init(self, num_timesteps)
-            model_pred_img_cache_dic, model_pred_img_current = cache_init(self, num_timesteps)
+            # 从 kargs 中提取参数，如果不存在则使用默认值
+            taylor_max_order = kargs.get('taylor_max_order', 6)
+            taylor_first_enhance = kargs.get('taylor_first_enhance', 5)
+            taylor_fresh_threshold = kargs.get('taylor_fresh_threshold', 4)
+
+            # 将提取出的参数传递给 cache_init
+            model_pred_cache_dic, model_pred_current = cache_init(self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
+            model_pred_text_cache_dic, model_pred_text_current = cache_init(self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
+            model_pred_img_cache_dic, model_pred_img_current = cache_init(self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
         else:
             self.language_model.model.enable_taylorseer = False
             model_pred_cache_dic, model_pred_current = None, None

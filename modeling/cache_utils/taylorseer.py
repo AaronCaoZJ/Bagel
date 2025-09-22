@@ -116,7 +116,7 @@ def cal_type(cache_dic, current):
 
 # Modified from https://github.com/Shenyi-Z/TaylorSeer/blob/main/TaylorSeers-xDiT/taylorseer_flux/cache_functions/cache_init.py
 
-def cache_init(self, num_steps: int):
+def cache_init(self, num_steps: int, taylor_fresh_threshold=4, taylor_first_enhance=5, taylor_max_order=6):
     '''
     Initialization for cache.
     '''
@@ -139,11 +139,11 @@ def cache_init(self, num_steps: int):
     cache_dic['cache'] = cache
     cache_dic['fresh_ratio_schedule'] = 'ToCa' 
     cache_dic['fresh_ratio'] = 0.0
-    cache_dic['fresh_threshold'] = 3
+    cache_dic['fresh_threshold'] = taylor_fresh_threshold
     cache_dic['soft_fresh_weight'] = 0.0
     cache_dic['taylor_cache'] = True
-    cache_dic['max_order'] = 6
-    cache_dic['first_enhance'] = 5
+    cache_dic['max_order'] = taylor_max_order
+    cache_dic['first_enhance'] = taylor_first_enhance
 
     current = {}
     current['activated_steps'] = [0]

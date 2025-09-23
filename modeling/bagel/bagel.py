@@ -756,7 +756,14 @@ class Bagel(PreTrainedModel):
 
             x_t = x_t - v_t.to(x_t.device) * dts[i] # velocity pointing from data to noise
         
+        # 在整个图像生成完成后清空TaylorSeer缓存
         if enable_taylorseer:
+            # 清空模型的TaylorSeer缓存状态
+            self.language_model.model.cache_dic = None
+            self.language_model.model.current = None
+            self.language_model.model.enable_taylorseer = False
+            
+            # 删除局部缓存变量释放内存
             del model_pred_cache_dic, model_pred_current
             del model_pred_text_cache_dic, model_pred_text_current
             del model_pred_img_cache_dic, model_pred_img_current

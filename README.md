@@ -42,7 +42,7 @@ python app.py  --mode 3
 <br>
 
 # 🦄 Use TaylorSeer
-## Args：
+## Args
 * `taylor_max_order`: Taylor factor (the maximum order of high-order differences between outputs of each layer).
 * `taylor_first_enhance`: The step from which to start calculating the Taylor factor.
 * `taylor_fresh_threshold`: AKA "N", How many steps to interval for caching and factor refreshing.

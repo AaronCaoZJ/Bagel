@@ -4,6 +4,7 @@
 
 import random
 import json
+import math
 
 import numpy as np
 import torch
@@ -176,6 +177,7 @@ class PackedDataset(torch.utils.data.IterableDataset):
             vae_latent_shapes           = list(), 
             packed_vae_token_indexes    = list(), 
             packed_timesteps            = list(), 
+            # packed_delta_t              = list(),
             mse_loss_indexes            = list(),
             packed_vit_tokens           = list(), 
             vit_token_seqlens           = list(),
@@ -225,6 +227,7 @@ class PackedDataset(torch.utils.data.IterableDataset):
         # if the model is required to perform visual generation
         if len(sequence_status['packed_timesteps']) > 0:
             data['packed_timesteps'] = torch.tensor(sequence_status['packed_timesteps'])
+            # data['packed_delta_t'] = torch.tensor(sequence_status['packed_delta_t'])
             data['mse_loss_indexes'] = torch.tensor(sequence_status['mse_loss_indexes'])
 
         # if the model is required to perform text generation
@@ -425,12 +428,21 @@ class PackedDataset(torch.utils.data.IterableDataset):
                 sequence_status['packed_vae_token_indexes'].extend(range(curr, curr + num_img_tokens))
                 if item['loss'] == 1:
                     sequence_status['mse_loss_indexes'].extend(range(curr, curr + num_img_tokens))
+                    TYPICAL_NUM_TIMESTEPS = 64
+                    BOOTSTRAP = 8.0
+                    log2_sections = int(math.log2(TYPICAL_NUM_TIMESTEPS))
                     if split_start:
                         timestep = np.random.randn()
+                        if random.random() < 1/BOOTSTRAP:
+                            dt_base = random.randint(0, log2_sections)
+                        else:
+                            dt_base = 0
                 else:
                     timestep = float('-inf')
-
+                    dt_base = 0
+                delta_t = 1 / (2 ** dt_base)
                 sequence_status['packed_timesteps'].extend([timestep] * num_img_tokens)
+                # sequence_status['packed_delta_t'].extend([delta_t] * num_img_tokens)
                 curr += num_img_tokens
                 curr_split_len += num_img_tokens
 
@@ -507,6 +519,7 @@ class SimpleCustomBatch:
 
         if "packed_timesteps" in data.keys():
             self.packed_timesteps = data["packed_timesteps"]
+            # self.packed_delta_t = data["packed_delta_t"]
             self.mse_loss_indexes = data["mse_loss_indexes"]
 
         if "packed_label_ids" in data.keys():
@@ -529,6 +542,7 @@ class SimpleCustomBatch:
 
         if hasattr(self, 'packed_timesteps'):
             self.packed_timesteps = self.packed_timesteps.pin_memory()
+            # self.packed_delta_t = self.packed_delta_t.pin_memory()
             self.mse_loss_indexes = self.mse_loss_indexes.pin_memory()
 
         if hasattr(self, 'packed_vit_tokens'):
@@ -559,6 +573,7 @@ class SimpleCustomBatch:
 
         if hasattr(self, 'packed_timesteps'):
             self.packed_timesteps = self.packed_timesteps.to(device)
+            # self.packed_delta_t = self.packed_delta_t.to(device)
             self.mse_loss_indexes = self.mse_loss_indexes.to(device)
 
         if hasattr(self, 'packed_vit_tokens'):
@@ -604,6 +619,7 @@ class SimpleCustomBatch:
 
         if hasattr(self, 'packed_timesteps'):
             data['packed_timesteps'] = self.packed_timesteps
+            # data['packed_delta_t'] = self.packed_delta_t
             data['mse_loss_indexes'] = self.mse_loss_indexes
 
         if hasattr(self, 'packed_label_ids'):

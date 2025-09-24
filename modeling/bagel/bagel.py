@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
-import math
 from typing import List, Tuple, Optional, Dict, Any
 
 import torch
@@ -706,16 +705,133 @@ class Bagel(PreTrainedModel):
         dts =  timesteps[:-1] - timesteps[1:]
         timesteps = timesteps[:-1]
 
-        for i, t in tqdm(enumerate(timesteps), total=len(timesteps)):
+        prev_record_step = None  # {'mha': {layer_idx: tensor_cpu}, 'ffn': {...}}
 
+        def make_hook(kind, layer_idx):
+            def _hook(module, inp, out):
+                if layer_idx in current_step[kind]:
+                    return
+                if isinstance(out, tuple):
+                    tensor = out[0]
+                else:
+                    tensor = out
+                current_step[kind][layer_idx] = tensor.detach().to('cpu', non_blocking=True).float()
+            return _hook
+
+        for i, t in tqdm(enumerate(timesteps), total=len(timesteps)):
             timestep = torch.tensor([t] * x_t.shape[0], device=x_t.device)
+            hooks = []
+            if i > 30:
+                self.language_model.model.enable_taylorseer = False
+                model_pred_cache_dic, model_pred_current = None, None
+                model_pred_text_cache_dic, model_pred_text_current = None, None
+                model_pred_img_cache_dic, model_pred_img_current = None, None
+                if i == 30: print(f"taylorseer disabled at step {i}")
+            current_step = {'mha': {}, 'ffn': {}}
+            if monitor_layer_diffs:
+                for l_idx, layer in enumerate(self.language_model.model.layers):
+                    if hasattr(layer, 'self_attn'):
+                        hooks.append(layer.self_attn.register_forward_hook(make_hook('mha', l_idx)))
+                    if hasattr(layer, 'mlp'):
+                        hooks.append(layer.mlp.register_forward_hook(make_hook('ffn', l_idx)))
+
             if t > cfg_interval[0] and t <= cfg_interval[1]:
                 cfg_text_scale_ = cfg_text_scale
                 cfg_img_scale_ = cfg_img_scale
             else:
                 cfg_text_scale_ = 1.0
                 cfg_img_scale_ = 1.0
-            v_t = self._forward_flow(
+
+            if enable_learn2cache:
+                if i > 0 and i % 2 == 0:
+                    pass
+                else:
+                    if model_pred_current is not None:
+                        model_pred_current[0] = model_pred_current.get(0, -1) + 1
+                        print(f"l2c used")
+                    if model_pred_text_current is not None:
+                        model_pred_text_current[0] = model_pred_text_current.get(0, -1) + 1
+                    if model_pred_img_current is not None:
+                        model_pred_img_current[0] = model_pred_img_current.get(0, -1) + 1
+                    
+                v_t = self._forward_flow(
+                    x_t=x_t,
+                    timestep=timestep, 
+                    packed_vae_token_indexes=packed_vae_token_indexes,
+                    packed_vae_position_ids=packed_vae_position_ids,
+                    packed_text_ids=packed_text_ids,
+                    packed_text_indexes=packed_text_indexes,
+                    packed_position_ids=packed_position_ids,
+                    packed_indexes=packed_indexes,
+                    packed_seqlens=packed_seqlens,
+                    key_values_lens=key_values_lens,
+                    past_key_values=past_key_values,
+                    packed_key_value_indexes=packed_key_value_indexes,
+                    cfg_renorm_min=cfg_renorm_min,
+                    cfg_renorm_type=cfg_renorm_type,
+                    # cfg_text
+                    cfg_text_scale=cfg_text_scale_,
+                    cfg_text_packed_position_ids=cfg_text_packed_position_ids,
+                    cfg_text_packed_query_indexes=cfg_text_packed_query_indexes,
+                    cfg_text_key_values_lens=cfg_text_key_values_lens,
+                    cfg_text_past_key_values=cfg_text_past_key_values,
+                    cfg_text_packed_key_value_indexes=cfg_text_packed_key_value_indexes,
+                    # cfg_img
+                    cfg_img_scale=cfg_img_scale_,
+                    cfg_img_packed_position_ids=cfg_img_packed_position_ids,
+                    cfg_img_packed_query_indexes=cfg_img_packed_query_indexes,
+                    cfg_img_key_values_lens=cfg_img_key_values_lens,
+                    cfg_img_past_key_values=cfg_img_past_key_values,
+                    cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
+                    cfg_type=cfg_type,
+                    # cache
+                    model_pred_cache_dic=model_pred_cache_dic,
+                    model_pred_current=model_pred_current,
+                    model_pred_text_cache_dic=model_pred_text_cache_dic,
+                    model_pred_text_current=model_pred_text_current,
+                    model_pred_img_cache_dic=model_pred_img_cache_dic,
+                    model_pred_img_current=model_pred_img_current,
+                )
+            
+
+                for h in hooks:
+                    h.remove()
+                if monitor_layer_diffs:
+                    if prev_record_step is None:
+                        # 设置基准
+                        prev_record_step = {
+                            'step_idx': i,
+                            'mha': {k: v.cpu() for k, v in current_step['mha'].items()},
+                            'ffn': {k: v.cpu() for k, v in current_step['ffn'].items()},
+                        }
+                    else:
+                        gap = i - prev_record_step['step_idx']
+                        if gap >= monitor_interval:
+                            print(f"\n[LayerDiff] Compare step {prev_record_step['step_idx']} -> {i} (gap={gap})")
+                            layer_ids = sorted(set(prev_record_step['mha'].keys()) & set(current_step['mha'].keys()))
+                            for lid in layer_ids:
+                                cur_mha = current_step['mha'][lid].to('cpu').float().flatten()
+                                pre_mha = prev_record_step['mha'][lid].flatten()
+                                cur_ffn = current_step['ffn'][lid].float().flatten()
+                                pre_ffn = prev_record_step['ffn'][lid].flatten()
+
+                                mha_cos = F.cosine_similarity(cur_mha, pre_mha, dim=0).item()
+                                ffn_cos = F.cosine_similarity(cur_ffn, pre_ffn, dim=0).item()
+                                mha_l2 = (cur_mha - pre_mha).pow(2).mean().sqrt().item()
+                                ffn_l2 = (cur_ffn - pre_ffn).pow(2).mean().sqrt().item()
+                                mha_rel = mha_l2 / (pre_mha.pow(2).mean().sqrt().item() + 1e-8)
+                                ffn_rel = ffn_l2 / (pre_ffn.pow(2).mean().sqrt().item() + 1e-8)
+                                print(f"  Layer {lid:02d} | MHA cos={mha_cos:.4f} l2={mha_l2:.5f} rel={mha_rel:.4f} | "
+                                    f"FFN cos={ffn_cos:.4f} l2={ffn_l2:.5f} rel={ffn_rel:.4f}")
+
+                            prev_record_step = {
+                                'step_idx': i,
+                                'mha': {k: v.cpu() for k, v in current_step['mha'].items()},
+                                'ffn': {k: v.cpu() for k, v in current_step['ffn'].items()},
+                            }
+
+            else:
+                v_t = self._forward_flow(
                 x_t=x_t,
                 timestep=timestep, 
                 packed_vae_token_indexes=packed_vae_token_indexes,
@@ -754,16 +870,15 @@ class Bagel(PreTrainedModel):
                 model_pred_img_current=model_pred_img_current,
             )
 
+                for h in hooks:
+                    h.remove()
+                if monitor_layer_diffs:
+                    # 不进行记录
+                    pass
+
             x_t = x_t - v_t.to(x_t.device) * dts[i] # velocity pointing from data to noise
         
-        # 在整个图像生成完成后清空TaylorSeer缓存
         if enable_taylorseer:
-            # 清空模型的TaylorSeer缓存状态
-            self.language_model.model.cache_dic = None
-            self.language_model.model.current = None
-            self.language_model.model.enable_taylorseer = False
-            
-            # 删除局部缓存变量释放内存
             del model_pred_cache_dic, model_pred_current
             del model_pred_text_cache_dic, model_pred_text_current
             del model_pred_img_cache_dic, model_pred_img_current
@@ -838,6 +953,9 @@ class Bagel(PreTrainedModel):
             if self.language_model.model.enable_taylorseer:
                 self.language_model.model.cache_dic = model_pred_cache_dic
                 self.language_model.model.current = model_pred_current
+            else:
+                self.language_model.model.cache_dic = None
+                self.language_model.model.current = None
 
             output = self.language_model.forward_inference(
                 packed_query_sequence=packed_sequence,

@@ -1,4 +1,3 @@
-Build Faster Bagel
 # 🍩 Quick Start
 ## Set up Environment
 ```bash

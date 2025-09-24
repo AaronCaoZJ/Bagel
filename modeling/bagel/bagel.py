@@ -721,12 +721,12 @@ class Bagel(PreTrainedModel):
         for i, t in tqdm(enumerate(timesteps), total=len(timesteps)):
             timestep = torch.tensor([t] * x_t.shape[0], device=x_t.device)
             hooks = []
-            if i > 30:
-                self.language_model.model.enable_taylorseer = False
-                model_pred_cache_dic, model_pred_current = None, None
-                model_pred_text_cache_dic, model_pred_text_current = None, None
-                model_pred_img_cache_dic, model_pred_img_current = None, None
-                if i == 30: print(f"taylorseer disabled at step {i}")
+            # if i > 30:
+            #     self.language_model.model.enable_taylorseer = False
+            #     model_pred_cache_dic, model_pred_current = None, None
+            #     model_pred_text_cache_dic, model_pred_text_current = None, None
+            #     model_pred_img_cache_dic, model_pred_img_current = None, None
+            #     if i == 30: print(f"taylorseer disabled at step {i}")
             current_step = {'mha': {}, 'ffn': {}}
             if monitor_layer_diffs:
                 for l_idx, layer in enumerate(self.language_model.model.layers):

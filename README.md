@@ -7,8 +7,10 @@ conda create -n bagel python=3.10 -y
 conda activate bagel
 pip install -r requirements.txt
 pip install torch==2.8.0+cu128 torchvision==0.23.0+cu128 torchaudio==2.8.0+cu128 --extra-index-url https://download.pytorch.org/whl/cu128
-# FlashAttention only supports Ampere GPUs or newer 
-pip install flash_attn==2.5.8 --no-build-isolation
+# FlashAttention only supports Ampere GPUs or newer
+pip install packaging ninja
+ninja --version; echo $?  # Verify Ninja --> should return exit code "0"
+pip install flash-attn==2.8.3 --no-build-isolation
 ```
 ## Download Pretrained Checkpoint
 ```python

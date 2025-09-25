@@ -6,6 +6,7 @@ cd BAGEL
 conda create -n bagel python=3.10 -y
 conda activate bagel
 pip install -r requirements.txt
+pip install torch==2.8.0+cu128 torchvision==0.23.0+cu128 torchaudio==2.8.0+cu128 --extra-index-url https://download.pytorch.org/whl/cu128
 # FlashAttention only supports Ampere GPUs or newer 
 pip install flash_attn==2.5.8 --no-build-isolation
 ```
@@ -42,20 +43,22 @@ python app.py  --mode 3
 
 # 🦄 Use TaylorSeer
 ## Args
-* `taylor_max_order`: Taylor factor (the maximum order of high-order differences between outputs of each layer).
-* `taylor_first_enhance`: The step from which to start calculating the Taylor factor.
+* `taylor_max_order`: "order", the maximum order of high-order differences between outputs of each layer.
+* `taylor_first_enhance`: "FE", the step from which to start calculating the Taylor factor.
 * `taylor_fresh_threshold`: AKA "N", How many steps to interval for caching and factor refreshing.
+
+Let `order=6`, `FE=10`, `N=3`, `steps=41`, during the generation process, refresh steps are **1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41**.
 
 ## Experiment on img_edit task
 * 1024\*1024px picture, inference on 1 H100 machine.
 * Using a private fine-tuned Bagel based model.
 * Using parameters that balance time and quality, compare with the original 50-step sampling.
 
-| num_steps | max_order | first_enhance | N | time/s |
-| :-------: | :------: | :-----------: | :-: | -----: |
-| 50 w/o TS | - | - | -- | 25.97 |
-| 41 w/ TS | 6 | 10 | 3 | 🥇15.29 |
-| 39 w/ TS | 6 | 8 | 2 | 🥈17.06 |
+| mode | steps | order | FE | N | refresh | time/s |
+| :-- |:----: | :---: | :-: | :-:| :-----: | -----: |
+| w/o TS | 50 | - | - | - | 50 | 25.97 |
+| w/ TS | 41 | 6 | 10 | 3 | 21 | 🥇15.29 |
+| w/ TS | 39 | 6 | 8 | 2 | 24 | 🥈17.06 |
 
 
 <br>

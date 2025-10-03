@@ -44,7 +44,8 @@ python app.py  --mode 3
 <br>
 
 # 🦄 Use TaylorSeer
-## Args
+
+**Args:**
 * `taylor_max_order`: "order", the maximum order of high-order differences between outputs of each layer.
 * `taylor_first_enhance`: "FE", the step from which to start calculating the Taylor factor.
 * `taylor_fresh_threshold`: AKA "N", How many steps to interval for caching and factor refreshing.
@@ -62,10 +63,20 @@ Let `order=6`, `FE=10`, `N=3`, `steps=41`, during the generation process, refres
 | w/ TS | 41 | 6 | 10 | 3 | 21 | 🥇15.29 |
 | w/ TS | 39 | 6 | 8 | 2 | 24 | 🥈17.06 |
 
+<br>
+
+# 🪃 Use Speca
+As a draft model, Taylorseer outputs the feature of each transformer block in the next diffusion step. The **verification mechanism** works such that, at each output step of Taylorseer, the last transformer block performs an original forward calculation, computes the error with the result predicted by the cache, and based on this error, decides whether to continue using Taylorseer in the next diffusion step. This aims to dynamically adjust N and control the accumulation of errors.
+
+**Args:**
+* `speca_base_threshold`: The foundation of error tolerance for deep layer features.
+* `speca_decay_rate`: Variation factor of feature error tolerance.
+* `speca_min_taylor_steps`/`speca_max_taylor_steps`: Force refresh the cache and forward computation within a limited number of steps.
+* `speca_error_metric`: Type of error function.
 
 <br>
 
-# 🔥 Use TensorRT
+# ~~🔥 Try TensorRT~~
 ## Install Dependence
 ### Install tensorrt py package
 ```bash
@@ -80,8 +91,7 @@ pip install cuda-python==12.4.0
 ```
 Should see **cudart.py** in current_env/lib/python/site-packages/cuda.
 
-## Convert Model to TensorRT
-*ResNet50 as example*
+## Convert ResNet50 to TensorRT
 ### Export model to ONNX
 ```python
 torch.onnx.export(resnet50, dummy_input, "resnet50_pytorch.onnx", verbose=False)

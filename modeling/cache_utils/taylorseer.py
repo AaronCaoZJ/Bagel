@@ -116,7 +116,7 @@ def cal_type(cache_dic, current):
 
 # Modified from https://github.com/Shenyi-Z/TaylorSeer/blob/main/TaylorSeers-xDiT/taylorseer_flux/cache_functions/cache_init.py
 
-def cache_init(self, num_steps: int, taylor_fresh_threshold=4, taylor_first_enhance=5, taylor_max_order=6):
+def simple_cache_init(self, num_steps: int, taylor_fresh_threshold=4, taylor_first_enhance=5, taylor_max_order=6):
     '''
     Initialization for cache.
     '''

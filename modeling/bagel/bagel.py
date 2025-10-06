@@ -19,7 +19,9 @@ from data.data_utils import (
 )
 from .qwen2_navit import NaiveCache
 from .modeling_utils import MLPconnector, TimestepEmbedder, PositionEmbedding
-from modeling.cache_utils.taylorseer import cache_init
+
+from modeling.cache_utils.taylorseer import simple_cache_init
+from modeling.cache_utils.speca import cache_init
 
 from tqdm import tqdm
 
@@ -676,24 +678,52 @@ class Bagel(PreTrainedModel):
         cfg_type: str = "parallel",
         # cache_args
         enable_taylorseer=False,
-        enable_learn2cache=False,
         monitor_layer_diffs=False,
+        enable_learn2cache=False,
         monitor_interval: int = 1,
+        # speca_args
+        enable_speca=False,
+        speca_base_threshold: float = 0.1,
+        speca_decay_rate: float = 0.9,
+        speca_min_taylor_steps: int = 2,
+        speca_max_taylor_steps: int = 5,
+        speca_error_metric: str = "l1",
         **kargs,
-        ):
+    ):
         if enable_taylorseer:
             self.language_model.model.enable_taylorseer = True
-            # 从 kargs 中提取参数，如果不存在则使用默认值
             taylor_max_order = kargs.get('taylor_max_order', 6)
             taylor_first_enhance = kargs.get('taylor_first_enhance', 5)
             taylor_fresh_threshold = kargs.get('taylor_fresh_threshold', 4)
-
-            # 将提取出的参数传递给 cache_init
-            model_pred_cache_dic, model_pred_current = cache_init(self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
-            model_pred_text_cache_dic, model_pred_text_current = cache_init(self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
-            model_pred_img_cache_dic, model_pred_img_current = cache_init(self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
+            model_pred_cache_dic, model_pred_current = simple_cache_init(
+                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
+            model_pred_text_cache_dic, model_pred_text_current = simple_cache_init(
+                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
+            model_pred_img_cache_dic, model_pred_img_current = simple_cache_init(
+                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
+        elif enable_speca:
+            # self.language_model.model.enable_taylorseer = True  # 借用enable_taylorseer参数来开启speca
+            self.language_model.model.speca_enabled = True
+            taylor_max_order = kargs.get('taylor_max_order', 6)
+            taylor_first_enhance = kargs.get('taylor_first_enhance', 5)
+            taylor_fresh_threshold = kargs.get('taylor_fresh_threshold', 4)
+            speca_base_threshold = kargs.get('speca_base_threshold', 0.1)
+            speca_decay_rate = kargs.get('speca_decay_rate', 0.9)
+            speca_min_taylor_steps = kargs.get('speca_min_taylor_steps', 2)
+            speca_max_taylor_steps = kargs.get('speca_max_taylor_steps', 5)
+            speca_error_metric = kargs.get('speca_error_metric', 'l1')
+            model_pred_cache_dic, model_pred_current = cache_init(
+                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order,
+                speca_base_threshold, speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
+            model_pred_text_cache_dic, model_pred_text_current = cache_init(
+                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order,
+                speca_base_threshold, speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
+            model_pred_img_cache_dic, model_pred_img_current = cache_init(
+                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order,
+                speca_base_threshold, speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
         else:
             self.language_model.model.enable_taylorseer = False
+            self.language_model.model.speca_enabled = False
             model_pred_cache_dic, model_pred_current = None, None
             model_pred_text_cache_dic, model_pred_text_current = None, None
             model_pred_img_cache_dic, model_pred_img_current = None, None
@@ -721,12 +751,6 @@ class Bagel(PreTrainedModel):
         for i, t in tqdm(enumerate(timesteps), total=len(timesteps)):
             timestep = torch.tensor([t] * x_t.shape[0], device=x_t.device)
             hooks = []
-            # if i > 30:
-            #     self.language_model.model.enable_taylorseer = False
-            #     model_pred_cache_dic, model_pred_current = None, None
-            #     model_pred_text_cache_dic, model_pred_text_current = None, None
-            #     model_pred_img_cache_dic, model_pred_img_current = None, None
-            #     if i == 30: print(f"taylorseer disabled at step {i}")
             current_step = {'mha': {}, 'ffn': {}}
             if monitor_layer_diffs:
                 for l_idx, layer in enumerate(self.language_model.model.layers):
@@ -792,7 +816,6 @@ class Bagel(PreTrainedModel):
                     model_pred_img_cache_dic=model_pred_img_cache_dic,
                     model_pred_img_current=model_pred_img_current,
                 )
-            
 
                 for h in hooks:
                     h.remove()
@@ -832,53 +855,52 @@ class Bagel(PreTrainedModel):
 
             else:
                 v_t = self._forward_flow(
-                x_t=x_t,
-                timestep=timestep, 
-                packed_vae_token_indexes=packed_vae_token_indexes,
-                packed_vae_position_ids=packed_vae_position_ids,
-                packed_text_ids=packed_text_ids,
-                packed_text_indexes=packed_text_indexes,
-                packed_position_ids=packed_position_ids,
-                packed_indexes=packed_indexes,
-                packed_seqlens=packed_seqlens,
-                key_values_lens=key_values_lens,
-                past_key_values=past_key_values,
-                packed_key_value_indexes=packed_key_value_indexes,
-                cfg_renorm_min=cfg_renorm_min,
-                cfg_renorm_type=cfg_renorm_type,
-                # cfg_text
-                cfg_text_scale=cfg_text_scale_,
-                cfg_text_packed_position_ids=cfg_text_packed_position_ids,
-                cfg_text_packed_query_indexes=cfg_text_packed_query_indexes,
-                cfg_text_key_values_lens=cfg_text_key_values_lens,
-                cfg_text_past_key_values=cfg_text_past_key_values,
-                cfg_text_packed_key_value_indexes=cfg_text_packed_key_value_indexes,
-                # cfg_img
-                cfg_img_scale=cfg_img_scale_,
-                cfg_img_packed_position_ids=cfg_img_packed_position_ids,
-                cfg_img_packed_query_indexes=cfg_img_packed_query_indexes,
-                cfg_img_key_values_lens=cfg_img_key_values_lens,
-                cfg_img_past_key_values=cfg_img_past_key_values,
-                cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
-                cfg_type=cfg_type,
-                # cache
-                model_pred_cache_dic=model_pred_cache_dic,
-                model_pred_current=model_pred_current,
-                model_pred_text_cache_dic=model_pred_text_cache_dic,
-                model_pred_text_current=model_pred_text_current,
-                model_pred_img_cache_dic=model_pred_img_cache_dic,
-                model_pred_img_current=model_pred_img_current,
-            )
+                    x_t=x_t,
+                    timestep=timestep, 
+                    packed_vae_token_indexes=packed_vae_token_indexes,
+                    packed_vae_position_ids=packed_vae_position_ids,
+                    packed_text_ids=packed_text_ids,
+                    packed_text_indexes=packed_text_indexes,
+                    packed_position_ids=packed_position_ids,
+                    packed_indexes=packed_indexes,
+                    packed_seqlens=packed_seqlens,
+                    key_values_lens=key_values_lens,
+                    past_key_values=past_key_values,
+                    packed_key_value_indexes=packed_key_value_indexes,
+                    cfg_renorm_min=cfg_renorm_min,
+                    cfg_renorm_type=cfg_renorm_type,
+                    # cfg_text
+                    cfg_text_scale=cfg_text_scale_,
+                    cfg_text_packed_position_ids=cfg_text_packed_position_ids,
+                    cfg_text_packed_query_indexes=cfg_text_packed_query_indexes,
+                    cfg_text_key_values_lens=cfg_text_key_values_lens,
+                    cfg_text_past_key_values=cfg_text_past_key_values,
+                    cfg_text_packed_key_value_indexes=cfg_text_packed_key_value_indexes,
+                    # cfg_img
+                    cfg_img_scale=cfg_img_scale_,
+                    cfg_img_packed_position_ids=cfg_img_packed_position_ids,
+                    cfg_img_packed_query_indexes=cfg_img_packed_query_indexes,
+                    cfg_img_key_values_lens=cfg_img_key_values_lens,
+                    cfg_img_past_key_values=cfg_img_past_key_values,
+                    cfg_img_packed_key_value_indexes=cfg_img_packed_key_value_indexes,
+                    cfg_type=cfg_type,
+                    # cache
+                    model_pred_cache_dic=model_pred_cache_dic,
+                    model_pred_current=model_pred_current,
+                    model_pred_text_cache_dic=model_pred_text_cache_dic,
+                    model_pred_text_current=model_pred_text_current,
+                    model_pred_img_cache_dic=model_pred_img_cache_dic,
+                    model_pred_img_current=model_pred_img_current,
+                )
 
                 for h in hooks:
                     h.remove()
                 if monitor_layer_diffs:
-                    # 不进行记录
                     pass
 
             x_t = x_t - v_t.to(x_t.device) * dts[i] # velocity pointing from data to noise
         
-        if enable_taylorseer:
+        if enable_taylorseer or enable_speca:
             del model_pred_cache_dic, model_pred_current
             del model_pred_text_cache_dic, model_pred_text_current
             del model_pred_img_cache_dic, model_pred_img_current
@@ -887,7 +909,6 @@ class Bagel(PreTrainedModel):
         return unpacked_latent
 
     @torch.no_grad
-        # ...existing code...
     def _forward_flow(
         self,
         x_t: torch.Tensor,
@@ -950,7 +971,7 @@ class Bagel(PreTrainedModel):
 
         # Helper: sequential fallback (original safe behaviour)
         def _sequential_forward():
-            if self.language_model.model.enable_taylorseer:
+            if self.language_model.model.enable_taylorseer or self.language_model.model.enable_speca:
                 self.language_model.model.cache_dic = model_pred_cache_dic
                 self.language_model.model.current = model_pred_current
             else:
@@ -977,7 +998,7 @@ class Bagel(PreTrainedModel):
 
             # cfg_text
             if cfg_text_scale > 1.0:
-                if self.language_model.model.enable_taylorseer:
+                if self.language_model.model.enable_taylorseer or self.language_model.model.enable_speca:
                     self.language_model.model.cache_dic = model_pred_text_cache_dic
                     self.language_model.model.current = model_pred_text_current
                 cfg_text_output = self.language_model.forward_inference(
@@ -996,7 +1017,7 @@ class Bagel(PreTrainedModel):
 
             # cfg_img
             if cfg_img_scale > 1.0:
-                if self.language_model.model.enable_taylorseer:
+                if self.language_model.model.enable_taylorseer or self.language_model.model.enable_speca:
                     self.language_model.model.cache_dic = model_pred_img_cache_dic
                     self.language_model.model.current = model_pred_img_current
                 cfg_img_output = self.language_model.forward_inference(
@@ -1022,7 +1043,7 @@ class Bagel(PreTrainedModel):
             (cfg_img_past_key_values is not None and cfg_img_past_key_values is not past_key_values):
             batched_allowed = False
         # not safe if taylorseer cache is required (we don't merge caches here)
-        if self.language_model.model.enable_taylorseer:
+        if self.language_model.model.enable_taylorseer or self.language_model.model.speca_enabled:
             batched_allowed = False
         # not safe if packed_query indexing semantics are complex -- conservative check
         if (cfg_text_packed_query_indexes is not None and cfg_text_packed_query_indexes.shape != packed_indexes.shape) or \

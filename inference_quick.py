@@ -177,12 +177,13 @@ inference_hyper=dict(
     cfg_renorm_type="global",
     enable_taylorseer=True,  # Enable TaylorSeer
     enable_speca=True,  # Enable SpecA
-    taylor_first_enhance=5,  # TaylorSeer parameter
+    taylor_first_enhance=10,  # TaylorSeer parameter
     speca_base_threshold=0.1,
-    speca_decay_rate=0.9,
-    speca_min_taylor_steps=3,
-    speca_max_taylor_steps=6,
+    speca_decay_rate=0.05,
+    speca_min_taylor_steps=2,
+    speca_max_taylor_steps=4,
     speca_error_metric="l1",
+    image_shapes=(1024, 1024),
 )
 
 # inference_hyper=dict(
@@ -268,6 +269,6 @@ else:
 
 out_dir = Path("outputs")
 out_dir.mkdir(parents=True, exist_ok=True)
-out_path = out_dir / f"speca_h100_{inference_duration:.2f}.png"
+out_path = out_dir / f"taylor_h100_{inference_duration:.2f}.png"
 pil_img.save(out_path)
 print(f"Saved image to: {out_path}")

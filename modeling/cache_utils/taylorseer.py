@@ -80,6 +80,18 @@ def cal_type(cache_dic, current):
     '''
     Determine calculation type for this step
     '''
+    # 最后一步强制 full 刷新
+    if current['step'] == current['num_steps'] - 1:
+        current['type'] = 'full'
+        cache_dic['cache_counter'] = 0
+        current['activated_steps'].append(current['step'])
+        # 记录日志
+        try:
+            cache_dic.setdefault('step_log', []).append((int(current['step']), str(current['type'])))
+        except Exception:
+            pass
+        return
+
     if (cache_dic['fresh_ratio'] == 0.0) and (not cache_dic['taylor_cache']):
         # FORA:Uniform
         first_step = (current['step'] == 0)
@@ -113,6 +125,12 @@ def cal_type(cache_dic, current):
         cache_dic['cache_counter'] += 1
         current['type'] = 'ToCa'
 
+    # 记录日志
+    try:
+        cache_dic.setdefault('step_log', []).append((int(current['step']), str(current['type'])))
+    except Exception:
+        pass
+
 
 # Modified from https://github.com/Shenyi-Z/TaylorSeer/blob/main/TaylorSeers-xDiT/taylorseer_flux/cache_functions/cache_init.py
 
@@ -144,6 +162,7 @@ def simple_cache_init(self, num_steps: int, taylor_fresh_threshold=4, taylor_fir
     cache_dic['taylor_cache'] = True
     cache_dic['max_order'] = taylor_max_order
     cache_dic['first_enhance'] = taylor_first_enhance
+    cache_dic['step_log'] = []
 
     current = {}
     current['activated_steps'] = [0]

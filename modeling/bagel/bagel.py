@@ -901,6 +901,29 @@ class Bagel(PreTrainedModel):
             x_t = x_t - v_t.to(x_t.device) * dts[i] # velocity pointing from data to noise
         
         if enable_taylorseer or enable_speca:
+            # 打印与保存 step 日志（若存在）
+            try:
+                logs = []
+                if model_pred_cache_dic is not None and 'step_log' in model_pred_cache_dic:
+                    logs.append(('model_pred', model_pred_cache_dic['step_log']))
+                if model_pred_text_cache_dic is not None and 'step_log' in model_pred_text_cache_dic:
+                    logs.append(('model_pred_text', model_pred_text_cache_dic['step_log']))
+                if model_pred_img_cache_dic is not None and 'step_log' in model_pred_img_cache_dic:
+                    logs.append(('model_pred_img', model_pred_img_cache_dic['step_log']))
+                if len(logs) > 0:
+                    print("[StepLog] Cache step types per branch:")
+                    for name, entries in logs:
+                        print(f"  - {name}: {entries}")
+                    try:
+                        with open('/root/Miko_share/Bagel/outputs/step_log.txt', 'a') as f:
+                            f.write("[StepLog] Cache step types per branch:\n")
+                            for name, entries in logs:
+                                f.write(f"  - {name}: {entries}\n")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             del model_pred_cache_dic, model_pred_current
             del model_pred_text_cache_dic, model_pred_text_current
             del model_pred_img_cache_dic, model_pred_img_current

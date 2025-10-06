@@ -112,6 +112,7 @@ class InterleaveInferencer:
         num_timesteps=50, 
         timestep_shift=3.0,
         enable_taylorseer=False,
+        enable_speca=False,
         **kargs,
     ):
         # print(cfg_renorm_type)
@@ -144,33 +145,102 @@ class InterleaveInferencer:
             curr_rope=ropes_cfg, 
             image_sizes=[image_shape], 
         )
-
-        unpacked_latent = self.model.generate_image(
-            past_key_values=past_key_values,
-            cfg_text_past_key_values=cfg_text_past_key_values,
-            cfg_img_past_key_values=cfg_img_past_key_values,
-            num_timesteps=num_timesteps,
-            cfg_text_scale=cfg_text_scale,
-            cfg_img_scale=cfg_img_scale,
-            cfg_interval=cfg_interval,
-            cfg_renorm_min=cfg_renorm_min,
-            cfg_renorm_type=cfg_renorm_type,
-            timestep_shift=timestep_shift,
-            **generation_input,
-            cfg_text_packed_position_ids=generation_input_cfg_text['cfg_packed_position_ids'],
-            cfg_text_packed_query_indexes=generation_input_cfg_text['cfg_packed_query_indexes'],
-            cfg_text_key_values_lens=generation_input_cfg_text['cfg_key_values_lens'],
-            cfg_text_packed_key_value_indexes=generation_input_cfg_text['cfg_packed_key_value_indexes'],
-            cfg_img_packed_position_ids=generation_input_cfg_img['cfg_packed_position_ids'],
-            cfg_img_packed_query_indexes=generation_input_cfg_img['cfg_packed_query_indexes'],
-            cfg_img_key_values_lens=generation_input_cfg_img['cfg_key_values_lens'],
-            cfg_img_packed_key_value_indexes=generation_input_cfg_img['cfg_packed_key_value_indexes'],
-            enable_taylorseer=enable_taylorseer,
-            taylor_max_order=kargs.get("taylor_max_order", 5),
-            taylor_first_enhance=kargs.get("taylor_first_enhance", 5),
-            taylor_fresh_threshold=kargs.get("taylor_fresh_threshold", 4),
-        )
-
+        if enable_taylorseer and not enable_speca:
+            assert 'taylor_first_enhance' in kargs, "Please provide taylor_first_enhance when enable_taylorseer is True"
+            taylor_first_enhance = kargs.get("taylor_first_enhance", 5)
+            assert 'taylor_max_order' in kargs, "Please provide taylor_max_order when enable_taylorseer is True"
+            taylor_max_order = kargs.get("taylor_max_order", 5)
+            assert 'taylor_fresh_threshold' in kargs, "Please provide taylor_fresh_threshold when enable_taylorseer is True"
+            taylor_fresh_threshold = kargs.get("taylor_fresh_threshold", 4)
+            unpacked_latent = self.model.generate_image(
+                past_key_values=past_key_values,
+                cfg_text_past_key_values=cfg_text_past_key_values,
+                cfg_img_past_key_values=cfg_img_past_key_values,
+                num_timesteps=num_timesteps,
+                cfg_text_scale=cfg_text_scale,
+                cfg_img_scale=cfg_img_scale,
+                cfg_interval=cfg_interval,
+                cfg_renorm_min=cfg_renorm_min,
+                cfg_renorm_type=cfg_renorm_type,
+                timestep_shift=timestep_shift,
+                **generation_input,
+                cfg_text_packed_position_ids=generation_input_cfg_text['cfg_packed_position_ids'],
+                cfg_text_packed_query_indexes=generation_input_cfg_text['cfg_packed_query_indexes'],
+                cfg_text_key_values_lens=generation_input_cfg_text['cfg_key_values_lens'],
+                cfg_text_packed_key_value_indexes=generation_input_cfg_text['cfg_packed_key_value_indexes'],
+                cfg_img_packed_position_ids=generation_input_cfg_img['cfg_packed_position_ids'],
+                cfg_img_packed_query_indexes=generation_input_cfg_img['cfg_packed_query_indexes'],
+                cfg_img_key_values_lens=generation_input_cfg_img['cfg_key_values_lens'],
+                cfg_img_packed_key_value_indexes=generation_input_cfg_img['cfg_packed_key_value_indexes'],
+                enable_taylorseer=enable_taylorseer,
+                taylor_max_order=taylor_max_order,
+                taylor_first_enhance=taylor_first_enhance,
+                taylor_fresh_threshold=taylor_fresh_threshold,
+            )
+        elif enable_speca:
+            assert 'taylor_first_enhance' in kargs, "Please provide taylor_first_enhance when enable_speca is True"
+            taylor_first_enhance = kargs.get("taylor_first_enhance", 5)
+            assert 'speca_base_threshold' in kargs, "Please provide speca_base_threshold when enable_speca is True"
+            speca_base_threshold = kargs.get("speca_base_threshold", 0.1)
+            assert 'speca_decay_rate' in kargs, "Please provide speca_decay_rate when enable_speca is True"
+            speca_decay_rate = kargs.get("speca_decay_rate", 0.9)
+            assert 'speca_min_taylor_steps' in kargs, "Please provide speca_min_taylor_steps when enable_speca is True"
+            speca_min_taylor_steps = kargs.get("speca_min_taylor_steps", 2)
+            assert 'speca_max_taylor_steps' in kargs, "Please provide speca_max_taylor_steps when enable_speca is True"
+            speca_max_taylor_steps = kargs.get("speca_max_taylor_steps", 5)
+            assert 'speca_error_metric' in kargs, "Please provide speca_error_metric when enable_speca is True"
+            speca_error_metric = kargs.get("speca_error_metric", 'l1')       
+            unpacked_latent = self.model.generate_image(
+                past_key_values=past_key_values,
+                cfg_text_past_key_values=cfg_text_past_key_values,
+                cfg_img_past_key_values=cfg_img_past_key_values,
+                num_timesteps=num_timesteps,
+                cfg_text_scale=cfg_text_scale,
+                cfg_img_scale=cfg_img_scale,
+                cfg_interval=cfg_interval,
+                cfg_renorm_min=cfg_renorm_min,
+                cfg_renorm_type=cfg_renorm_type,
+                timestep_shift=timestep_shift,
+                **generation_input,
+                cfg_text_packed_position_ids=generation_input_cfg_text['cfg_packed_position_ids'],
+                cfg_text_packed_query_indexes=generation_input_cfg_text['cfg_packed_query_indexes'],
+                cfg_text_key_values_lens=generation_input_cfg_text['cfg_key_values_lens'],
+                cfg_text_packed_key_value_indexes=generation_input_cfg_text['cfg_packed_key_value_indexes'],
+                cfg_img_packed_position_ids=generation_input_cfg_img['cfg_packed_position_ids'],
+                cfg_img_packed_query_indexes=generation_input_cfg_img['cfg_packed_query_indexes'],
+                cfg_img_key_values_lens=generation_input_cfg_img['cfg_key_values_lens'],
+                cfg_img_packed_key_value_indexes=generation_input_cfg_img['cfg_packed_key_value_indexes'],
+                enable_speca=True,
+                taylor_first_enhance=taylor_first_enhance,
+                speca_base_threshold=speca_base_threshold,
+                speca_decay_rate=speca_decay_rate,
+                speca_min_taylor_steps=speca_min_taylor_steps,
+                speca_max_taylor_steps=speca_max_taylor_steps,
+                speca_error_metric=speca_error_metric,
+            )                             
+        else:
+            unpacked_latent = self.model.generate_image(
+                past_key_values=past_key_values,
+                cfg_text_past_key_values=cfg_text_past_key_values,
+                cfg_img_past_key_values=cfg_img_past_key_values,
+                num_timesteps=num_timesteps,
+                cfg_text_scale=cfg_text_scale,
+                cfg_img_scale=cfg_img_scale,
+                cfg_interval=cfg_interval,
+                cfg_renorm_min=cfg_renorm_min,
+                cfg_renorm_type=cfg_renorm_type,
+                timestep_shift=timestep_shift,
+                **generation_input,
+                cfg_text_packed_position_ids=generation_input_cfg_text['cfg_packed_position_ids'],
+                cfg_text_packed_query_indexes=generation_input_cfg_text['cfg_packed_query_indexes'],
+                cfg_text_key_values_lens=generation_input_cfg_text['cfg_key_values_lens'],
+                cfg_text_packed_key_value_indexes=generation_input_cfg_text['cfg_packed_key_value_indexes'],
+                cfg_img_packed_position_ids=generation_input_cfg_img['cfg_packed_position_ids'],
+                cfg_img_packed_query_indexes=generation_input_cfg_img['cfg_packed_query_indexes'],
+                cfg_img_key_values_lens=generation_input_cfg_img['cfg_key_values_lens'],
+                cfg_img_packed_key_value_indexes=generation_input_cfg_img['cfg_packed_key_value_indexes'],
+            )
+            
         image = self.decode_image(unpacked_latent[0], image_shape)
         return image
 

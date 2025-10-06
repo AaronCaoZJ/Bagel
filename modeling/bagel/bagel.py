@@ -690,7 +690,7 @@ class Bagel(PreTrainedModel):
         speca_error_metric: str = "l1",
         **kargs,
     ):
-        if enable_taylorseer:
+        if enable_taylorseer and not enable_speca:
             self.language_model.model.enable_taylorseer = True
             taylor_max_order = kargs.get('taylor_max_order', 6)
             taylor_first_enhance = kargs.get('taylor_first_enhance', 5)
@@ -702,28 +702,28 @@ class Bagel(PreTrainedModel):
             model_pred_img_cache_dic, model_pred_img_current = simple_cache_init(
                 self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
         elif enable_speca:
-            # self.language_model.model.enable_taylorseer = True  # 借用enable_taylorseer参数来开启speca
-            self.language_model.model.speca_enabled = True
+            self.language_model.model.enable_taylorseer = True  # 借用enable_taylorseer参数来开启speca
+            self.language_model.model.enable_speca = True
             taylor_max_order = kargs.get('taylor_max_order', 6)
             taylor_first_enhance = kargs.get('taylor_first_enhance', 5)
-            taylor_fresh_threshold = kargs.get('taylor_fresh_threshold', 4)
+            # taylor_fresh_threshold = kargs.get('taylor_fresh_threshold', 4)
             speca_base_threshold = kargs.get('speca_base_threshold', 0.1)
             speca_decay_rate = kargs.get('speca_decay_rate', 0.9)
             speca_min_taylor_steps = kargs.get('speca_min_taylor_steps', 2)
             speca_max_taylor_steps = kargs.get('speca_max_taylor_steps', 5)
             speca_error_metric = kargs.get('speca_error_metric', 'l1')
             model_pred_cache_dic, model_pred_current = cache_init(
-                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order,
-                speca_base_threshold, speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
+                self, num_timesteps, taylor_first_enhance, taylor_max_order, speca_base_threshold, 
+                speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
             model_pred_text_cache_dic, model_pred_text_current = cache_init(
-                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order,
-                speca_base_threshold, speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
+                self, num_timesteps, taylor_first_enhance, taylor_max_order, speca_base_threshold, 
+                speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
             model_pred_img_cache_dic, model_pred_img_current = cache_init(
-                self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order,
-                speca_base_threshold, speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
+                self, num_timesteps, taylor_first_enhance, taylor_max_order, speca_base_threshold, 
+                speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
         else:
             self.language_model.model.enable_taylorseer = False
-            self.language_model.model.speca_enabled = False
+            self.language_model.model.enable_speca = False
             model_pred_cache_dic, model_pred_current = None, None
             model_pred_text_cache_dic, model_pred_text_current = None, None
             model_pred_img_cache_dic, model_pred_img_current = None, None
@@ -1043,7 +1043,7 @@ class Bagel(PreTrainedModel):
             (cfg_img_past_key_values is not None and cfg_img_past_key_values is not past_key_values):
             batched_allowed = False
         # not safe if taylorseer cache is required (we don't merge caches here)
-        if self.language_model.model.enable_taylorseer or self.language_model.model.speca_enabled:
+        if self.language_model.model.enable_taylorseer or self.language_model.model.enable_speca:
             batched_allowed = False
         # not safe if packed_query indexing semantics are complex -- conservative check
         if (cfg_text_packed_query_indexes is not None and cfg_text_packed_query_indexes.shape != packed_indexes.shape) or \

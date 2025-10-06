@@ -166,8 +166,8 @@ def speca_cal_type(cache_dic, current):
 def cache_init(
         self, 
         num_steps: int, 
-        taylor_fresh_threshold=4, 
-        taylor_first_enhance=5, 
+        # taylor_fresh_threshold=4,
+        taylor_first_enhance=5,
         taylor_max_order=6,
         speca_base_threshold=0.1,
         speca_decay_rate=0.9,
@@ -201,11 +201,12 @@ def cache_init(
     # taylorseer parameters
     cache_dic['taylor_cache'] = True
     cache_dic['max_order'] = taylor_max_order
-    cache_dic['fresh_threshold'] = taylor_fresh_threshold
+    # cache_dic['fresh_threshold'] = taylor_fresh_threshold
     cache_dic['first_enhance'] = taylor_first_enhance
 
     cache_dic['cache_counter'] = 0
     cache_dic['taylor_step_counter']  = 0
+    cache_dic['full_count'] = 0
 
     # speca parameters
     cache_dic['base_threshold']  = speca_base_threshold

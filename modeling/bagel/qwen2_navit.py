@@ -769,7 +769,9 @@ class Qwen2MoTDecoderLayer(nn.Module):
         packed_text_indexes=None,
     ) -> BaseNavitOutputWithPast:
         
-        check_layer = (self.current['layer'] == 27)
+        current = getattr(self, 'current', None)
+        check_layer = bool(current and current.get('layer', -1) == 27)
+        # check_layer = (self.current['layer'] == 27)
         full_packed_query_sequence = packed_query_sequence.clone() if check_layer else None
         
         enable_taylorseer = getattr(self, 'enable_taylorseer', False)
@@ -1015,6 +1017,10 @@ class Qwen2Model(Qwen2PreTrainedModel):
         self.vocab_size = config.vocab_size
         self.use_moe = 'Mo' in config.layer_module
 
+        # Initialize cache mechanism attributes
+        self.enable_taylorseer = False
+        self.enable_speca = False
+
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         layer_module = Decoder_layer_dict[config.layer_module]
         self.layers = nn.ModuleList(
@@ -1101,7 +1107,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         
         enable_taylorseer = getattr(self, 'enable_taylorseer', False)
         enable_speca = getattr(self, 'enable_speca', False)
-        if enable_taylorseer:
+        if enable_taylorseer and not enable_speca:
             cal_type(self.cache_dic, self.current)
             self.current['stream'] = 'layers_stream'
         elif enable_speca:

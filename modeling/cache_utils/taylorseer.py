@@ -81,7 +81,7 @@ def cal_type(cache_dic, current):
     Determine calculation type for this step
     '''
     # 最后一步强制 full 刷新
-    if current['step'] == current['num_steps'] - 1:
+    if current['step'] == current['num_steps'] - 2:
         current['type'] = 'full'
         cache_dic['cache_counter'] = 0
         current['activated_steps'].append(current['step'])

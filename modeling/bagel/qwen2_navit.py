@@ -773,7 +773,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
         check_layer = bool(current and current.get('layer', -1) == 27)
         # check_layer = (self.current['layer'] == 27)
         full_packed_query_sequence = packed_query_sequence.clone() if check_layer else None
-        
+                
         enable_taylorseer = getattr(self, 'enable_taylorseer', False)
         enable_speca = getattr(self, 'enable_speca', False)
 
@@ -847,7 +847,7 @@ class Qwen2MoTDecoderLayer(nn.Module):
 
                         # Self Attention
                         full_packed_query_sequence, past_key_values = self.self_attn(
-                            full_packed_query_sequence=full_packed_query_sequence,
+                            packed_query_sequence=full_packed_query_sequence,
                             query_lens=query_lens,
                             packed_query_position_embeddings=packed_query_position_embeddings,
                             packed_query_indexes=packed_query_indexes,
@@ -1107,6 +1107,7 @@ class Qwen2Model(Qwen2PreTrainedModel):
         
         enable_taylorseer = getattr(self, 'enable_taylorseer', False)
         enable_speca = getattr(self, 'enable_speca', False)
+                
         if enable_taylorseer and not enable_speca:
             cal_type(self.cache_dic, self.current)
             self.current['stream'] = 'layers_stream'
@@ -1135,7 +1136,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
             if enable_taylorseer or enable_speca:
                 decoder_layer.current = self.current
                 decoder_layer.cache_dic = self.cache_dic
-                decoder_layer.enable_taylorseer = True
+                decoder_layer.enable_taylorseer = enable_taylorseer
+                decoder_layer.enable_speca = enable_speca
                 self.current['layer'] = layer_idx
             packed_query_sequence, past_key_values = decoder_layer(
                 packed_query_sequence=packed_query_sequence,

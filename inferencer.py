@@ -152,6 +152,12 @@ class InterleaveInferencer:
             taylor_max_order = kargs.get("taylor_max_order", 5)
             assert 'taylor_fresh_threshold' in kargs, "Please provide taylor_fresh_threshold when enable_taylorseer is True"
             taylor_fresh_threshold = kargs.get("taylor_fresh_threshold", 4)
+
+            print(f"[Inferencer] TaylorSeer参数确认:")
+            print(f"  - taylor_first_enhance = {taylor_first_enhance}")
+            print(f"  - taylor_max_order = {taylor_max_order}")
+            print(f"  - taylor_fresh_threshold = {taylor_fresh_threshold}")
+
             unpacked_latent = self.model.generate_image(
                 past_key_values=past_key_values,
                 cfg_text_past_key_values=cfg_text_past_key_values,
@@ -180,6 +186,8 @@ class InterleaveInferencer:
         elif enable_speca:
             assert 'taylor_first_enhance' in kargs, "Please provide taylor_first_enhance when enable_speca is True"
             taylor_first_enhance = kargs.get("taylor_first_enhance", 5)
+            assert 'taylor_max_order' in kargs, "Please provide taylor_max_order when enable_speca is True"
+            taylor_max_order = kargs.get("taylor_max_order", 6)
             assert 'speca_base_threshold' in kargs, "Please provide speca_base_threshold when enable_speca is True"
             speca_base_threshold = kargs.get("speca_base_threshold", 0.1)
             assert 'speca_decay_rate' in kargs, "Please provide speca_decay_rate when enable_speca is True"
@@ -189,7 +197,18 @@ class InterleaveInferencer:
             assert 'speca_max_taylor_steps' in kargs, "Please provide speca_max_taylor_steps when enable_speca is True"
             speca_max_taylor_steps = kargs.get("speca_max_taylor_steps", 5)
             assert 'speca_error_metric' in kargs, "Please provide speca_error_metric when enable_speca is True"
-            speca_error_metric = kargs.get("speca_error_metric", 'l1')       
+            speca_error_metric = kargs.get("speca_error_metric", 'l1')
+            
+            # 调试信息：确认参数值
+            print(f"[Inferencer] SpeCa参数确认:")
+            print(f"  - taylor_first_enhance = {taylor_first_enhance}")
+            print(f"  - taylor_max_order = {taylor_max_order}")
+            print(f"  - speca_base_threshold = {speca_base_threshold}")
+            print(f"  - speca_decay_rate = {speca_decay_rate}")
+            print(f"  - speca_min_taylor_steps = {speca_min_taylor_steps}")
+            print(f"  - speca_max_taylor_steps = {speca_max_taylor_steps}")
+            print(f"  - speca_error_metric = {speca_error_metric}")
+            
             unpacked_latent = self.model.generate_image(
                 past_key_values=past_key_values,
                 cfg_text_past_key_values=cfg_text_past_key_values,
@@ -212,6 +231,7 @@ class InterleaveInferencer:
                 cfg_img_packed_key_value_indexes=generation_input_cfg_img['cfg_packed_key_value_indexes'],
                 enable_speca=True,
                 taylor_first_enhance=taylor_first_enhance,
+                taylor_max_order=taylor_max_order,
                 speca_base_threshold=speca_base_threshold,
                 speca_decay_rate=speca_decay_rate,
                 speca_min_taylor_steps=speca_min_taylor_steps,

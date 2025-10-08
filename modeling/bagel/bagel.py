@@ -678,16 +678,10 @@ class Bagel(PreTrainedModel):
         cfg_type: str = "parallel",
         # cache_args
         enable_taylorseer=False,
-        monitor_layer_diffs=False,
-        enable_learn2cache=False,
-        monitor_interval: int = 1,
-        # speca_args
         enable_speca=False,
-        speca_base_threshold: float = 0.1,
-        speca_decay_rate: float = 0.9,
-        speca_min_taylor_steps: int = 2,
-        speca_max_taylor_steps: int = 5,
-        speca_error_metric: str = "l1",
+        monitor_layer_diffs=False,
+        monitor_interval: int = 1,
+        enable_learn2cache=False,
         **kargs,
     ):
         if enable_taylorseer and not enable_speca:
@@ -695,6 +689,13 @@ class Bagel(PreTrainedModel):
             taylor_max_order = kargs.get('taylor_max_order', 6)
             taylor_first_enhance = kargs.get('taylor_first_enhance', 5)
             taylor_fresh_threshold = kargs.get('taylor_fresh_threshold', 4)
+
+            # 调试信息：检查bagel.py中的参数值
+            print(f"[Bagel] TaylorSeer参数确认:")
+            print(f"  - taylor_first_enhance = {taylor_first_enhance}")
+            print(f"  - taylor_max_order = {taylor_max_order}")
+            print(f"  - taylor_fresh_threshold = {taylor_fresh_threshold}")
+
             model_pred_cache_dic, model_pred_current = simple_cache_init(
                 self, num_timesteps, taylor_fresh_threshold, taylor_first_enhance, taylor_max_order)
             model_pred_text_cache_dic, model_pred_text_current = simple_cache_init(
@@ -706,12 +707,22 @@ class Bagel(PreTrainedModel):
             self.language_model.model.enable_speca = True
             taylor_max_order = kargs.get('taylor_max_order', 6)
             taylor_first_enhance = kargs.get('taylor_first_enhance', 5)
-            # taylor_fresh_threshold = kargs.get('taylor_fresh_threshold', 4)
             speca_base_threshold = kargs.get('speca_base_threshold', 0.1)
-            speca_decay_rate = kargs.get('speca_decay_rate', 0.9)
-            speca_min_taylor_steps = kargs.get('speca_min_taylor_steps', 2)
-            speca_max_taylor_steps = kargs.get('speca_max_taylor_steps', 5)
+            speca_decay_rate = kargs.get('speca_decay_rate', 0.9)  # 与inferencer.py保持一致
+            speca_min_taylor_steps = kargs.get('speca_min_taylor_steps', 1)  # 与inferencer.py保持一致
+            speca_max_taylor_steps = kargs.get('speca_max_taylor_steps', 5)  # 与inferencer.py保持一致
             speca_error_metric = kargs.get('speca_error_metric', 'l1')
+            
+            # 调试信息：检查bagel.py中的参数值
+            print(f"[Bagel] SpeCa参数确认:")
+            print(f"  - taylor_first_enhance = {taylor_first_enhance}")
+            print(f"  - taylor_max_order = {taylor_max_order}")
+            print(f"  - speca_base_threshold = {speca_base_threshold}")
+            print(f"  - speca_decay_rate = {speca_decay_rate}")
+            print(f"  - speca_min_taylor_steps = {speca_min_taylor_steps}")
+            print(f"  - speca_max_taylor_steps = {speca_max_taylor_steps}")
+            print(f"  - speca_error_metric = {speca_error_metric}")
+
             model_pred_cache_dic, model_pred_current = cache_init(
                 self, num_timesteps, taylor_first_enhance, taylor_max_order, speca_base_threshold, 
                 speca_decay_rate, speca_min_taylor_steps, speca_max_taylor_steps, speca_error_metric)
@@ -914,11 +925,36 @@ class Bagel(PreTrainedModel):
                     print("[StepLog] Cache step types per branch:")
                     for name, entries in logs:
                         print(f"  - {name}: {entries}")
+                    
+                    # 打印详细的error信息
+                    print("[StepLog] Error details per branch:")
+                    for name, entries in logs:
+                        error_steps = []
+                        for entry in entries:
+                            if len(entry) >= 3 and entry[2]:  # 如果有error信息
+                                error_steps.append(f"step{entry[0]}({entry[1]}){entry[2]}")
+                        if error_steps:
+                            print(f"  - {name} errors: {error_steps}")
+                        else:
+                            print(f"  - {name}: no error calculations")
+                    
                     try:
                         with open('/root/Miko_share/Bagel/outputs/step_log.txt', 'a') as f:
                             f.write("[StepLog] Cache step types per branch:\n")
                             for name, entries in logs:
                                 f.write(f"  - {name}: {entries}\n")
+                            
+                            # 写入详细的error信息
+                            f.write("[StepLog] Error details per branch:\n")
+                            for name, entries in logs:
+                                error_steps = []
+                                for entry in entries:
+                                    if len(entry) >= 3 and entry[2]:  # 如果有error信息
+                                        error_steps.append(f"step{entry[0]}({entry[1]}){entry[2]}")
+                                if error_steps:
+                                    f.write(f"  - {name} errors: {error_steps}\n")
+                                else:
+                                    f.write(f"  - {name}: no error calculations\n")
                     except Exception:
                         pass
             except Exception:

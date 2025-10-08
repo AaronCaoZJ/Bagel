@@ -31,12 +31,14 @@ class ErrorCalculator:
 
     def relative_l1(self, x, full_x):
         """计算相对L1误差"""
-        error = torch.abs(x - full_x) / (torch.abs(full_x) + self.eps)
+        denominator = torch.max(torch.abs(x), torch.abs(full_x)) + self.eps
+        error = torch.abs(x - full_x) / denominator
         return error.mean().item()
 
     def relative_l2(self, x, full_x):
         """计算相对L2误差"""
-        error = torch.abs(x - full_x) / (torch.abs(full_x) + self.eps)
+        denominator = torch.max(torch.abs(x), torch.abs(full_x)) + self.eps
+        error = torch.abs(x - full_x) / denominator
         return torch.sqrt(torch.mean(error ** 2)).item()
 
     def cosine_similarity(self, x, full_x):
@@ -69,11 +71,12 @@ def speca_cal_type(cache_dic, current):
 
     first_steps = (current['step'] < cache_dic['first_enhance'])
     reached_max_taylor = (cache_dic['taylor_step_counter'] >= max_taylor_steps)
-    progress = (current['num_steps'] - current['step']) / current['num_steps']
+    # progress = (current['num_steps'] - current['step']) / current['num_steps']
+    progress = current['step'] / current['num_steps']
     base_threshold = cache_dic['base_threshold']
     decay_rate = cache_dic['decay_rate']
     threshold = base_threshold * (decay_rate ** progress)
-    threshold = max(threshold, 0.005)
+    threshold = max(threshold, 0.01)
 
     if first_steps:
         current['type'] = 'full'
@@ -90,7 +93,7 @@ def speca_cal_type(cache_dic, current):
         return
 
     # 最后一步强制 full 刷新
-    if current['step'] == current['num_steps'] - 1:
+    if current['step'] == current['num_steps'] - 2:
         current['type'] = 'full'
         cache_dic['taylor_step_counter'] = 0
         cache_dic['full_count'] += 1
@@ -132,9 +135,12 @@ def speca_cal_type(cache_dic, current):
         current['activated_steps'].append(current['step'])
     else:
         cache_dic['cache_counter'] += 1
-    # 记录日志
+    # 记录日志，包含error信息
     try:
-        cache_dic.setdefault('step_log', []).append((int(current['step']), str(current['type'])))
+        error_info = ""
+        if current.get('last_layer_error') is not None:
+            error_info = f", error={current['last_layer_error']:.6f}"
+        cache_dic.setdefault('step_log', []).append((int(current['step']), str(current['type']), error_info))
     except Exception:
         pass
 
@@ -148,10 +154,10 @@ def cache_init(
         # taylor_fresh_threshold=4,
         taylor_first_enhance=5,
         taylor_max_order=6,
-        speca_base_threshold=0.1,
-        speca_decay_rate=0.9,
-        speca_min_taylor_steps=2,
-        speca_max_taylor_steps=5,
+        speca_base_threshold=0.5,
+        speca_decay_rate=0.05,
+        speca_min_taylor_steps=1,
+        speca_max_taylor_steps=3,
         speca_error_metric='l1'
     ):
     '''
@@ -173,20 +179,20 @@ def cache_init(
     cache_dic['cache_type'] = 'random'
     cache_dic['cache_index'] = cache_index
     cache_dic['cache'] = cache
-    cache_dic['fresh_ratio_schedule'] = 'ToCa' 
+    cache_dic['fresh_ratio_schedule'] = 'ToCa'
     cache_dic['fresh_ratio'] = 0.0
     cache_dic['soft_fresh_weight'] = 0.0
+
+    # inference step counter
+    cache_dic['cache_counter'] = 0
+    cache_dic['taylor_step_counter']  = 0
+    cache_dic['full_count'] = 0
 
     # taylorseer parameters
     cache_dic['taylor_cache'] = True
     cache_dic['max_order'] = taylor_max_order
-    # cache_dic['fresh_threshold'] = taylor_fresh_threshold
     cache_dic['first_enhance'] = taylor_first_enhance
     cache_dic['step_log'] = []
-
-    cache_dic['cache_counter'] = 0
-    cache_dic['taylor_step_counter']  = 0
-    cache_dic['full_count'] = 0
 
     # speca parameters
     cache_dic['base_threshold']  = speca_base_threshold

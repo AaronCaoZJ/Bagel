@@ -39,6 +39,7 @@ from safetensors.torch import load_file
 
 # %%
 model_path = "/root/Miko_share/Kokoro/models/BAGEL-7B-MoT/"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
+model_path = "/home/zhijun/Code/Bagel/models/BAGEL-7B-MoT/"
 
 # LLM config preparing
 llm_config = Qwen2Config.from_json_file(os.path.join(model_path, "llm_config.json"))
@@ -85,7 +86,7 @@ vit_transform = ImageTransform(980, 224, 14)
 # ## Model Loading and Multi GPU Infernece Preparing
 
 # %%
-max_mem_per_gpu = "80GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
+max_mem_per_gpu = "31GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
 
 device_map = infer_auto_device_map(
     model,
@@ -186,20 +187,6 @@ torch.backends.cudnn.benchmark = False
 #     speca_error_metric="relative_l2"
 # )
 
-inference_hyper=dict(
-    cfg_text_scale=4.0,
-    cfg_img_scale=2.0,
-    cfg_interval=[0.0, 1.0],
-    timestep_shift=3.0,
-    num_timesteps=50,
-    cfg_renorm_min=0.0,
-    cfg_renorm_type="text_channel",
-    enable_taylorseer=True,  # Enable TaylorSeer
-    taylor_first_enhance=6,  # TaylorSeer parameter
-    taylor_max_order=6,
-    taylor_fresh_threshold=3
-)
-
 # inference_hyper=dict(
 #     cfg_text_scale=4.0,
 #     cfg_img_scale=2.0,
@@ -208,11 +195,26 @@ inference_hyper=dict(
 #     num_timesteps=50,
 #     cfg_renorm_min=0.0,
 #     cfg_renorm_type="text_channel",
+#     enable_taylorseer=True,  # Enable TaylorSeer
+#     taylor_first_enhance=6,  # TaylorSeer parameter
+#     taylor_max_order=6,
+#     taylor_fresh_threshold=3
 # )
+
+inference_hyper=dict(
+    cfg_text_scale=4.0,
+    cfg_img_scale=2.0,
+    cfg_interval=[0.0, 1.0],
+    timestep_shift=3.0,
+    num_timesteps=50,
+    cfg_renorm_min=0.0,
+    cfg_renorm_type="text_channel",
+)
 # %%
 # ...existing code...
-image = Image.open('/root/Miko_share/Bagel/test_images/__castorice_honkai_and_1_more_drawn_by_houkisei__c767800bb2e5210319e753aaebc0855c.jpg')
-prompt = 'Take off all her clothes, exposing her private parts.'
+# image = Image.open('/root/Miko_share/Bagel/test_images/__castorice_honkai_and_1_more_drawn_by_houkisei__c767800bb2e5210319e753aaebc0855c.jpg')
+image = Image.open('/home/zhijun/Code/Bagel/test_images/wakaba_mutsumi.jpg')
+prompt = '将人物手中的吉他替换为小提琴.'
 
 print(prompt)
 # Save generated image to outputs/ with inference time in filename
@@ -269,8 +271,8 @@ else:
     except Exception as e:
         raise RuntimeError(f"Cannot convert image to PIL: {e}")
 
-out_dir = Path("outputs")
+out_dir = Path("/home/zhijun/Code/Bagel/outputs")
 out_dir.mkdir(parents=True, exist_ok=True)
-out_path = out_dir / f"ts_edit_{inference_duration:.2f}.png"
+out_path = out_dir / f"test_{inference_duration:.2f}.png"
 pil_img.save(out_path)
 print(f"Saved image to: {out_path}")

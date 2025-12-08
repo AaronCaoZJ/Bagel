@@ -38,7 +38,9 @@ from safetensors.torch import load_file
 # ## Model Initialization
 
 # %%
-model_path = "/root/Miko_share/Kokoro/models/BAGEL-7B-MoT/"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
+# model_path = "/root/Miko_share/Kokoro/models/BAGEL-7B-MoT/"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
+model_path = "/home/zhijun/Code/Bagel/models/BAGEL-7B-MoT/"
+
 
 # LLM config preparing
 llm_config = Qwen2Config.from_json_file(os.path.join(model_path, "llm_config.json"))
@@ -85,7 +87,7 @@ vit_transform = ImageTransform(980, 224, 14)
 # ## Model Loading and Multi GPU Infernece Preparing
 
 # %%
-max_mem_per_gpu = "80GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
+max_mem_per_gpu = "31GiB"  # Modify it according to your GPU setting. On an A100, 80 GiB is sufficient to load on a single GPU.
 
 device_map = infer_auto_device_map(
     model,

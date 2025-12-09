@@ -126,10 +126,10 @@ pip3 install tensorrt_llm==v0.20.0  # The first stable version switching to PyTo
 bash scripts/train.sh
 ```
 You can replace the variables in the script with your own before running. 
-See [TRAIN](TRAIN.md) for more details.
+See [TRAIN](train/TRAIN.md) for more details.
 ## Eval
 We provide the scripts for evaluating VLM, T2I and Editing benchmarks. 
-Please See [EVAL](EVAL.md) for more details.
+Please See [EVAL](eval/EVAL.md) for more details.
 
 <br>
 

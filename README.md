@@ -81,6 +81,45 @@ As a draft model, Taylorseer outputs the feature of each transformer block in th
 
 <br>
 
+# 🧩 Quantization
+## bitsandbytes
+Check arg `--mode` in app.py.
+```python
+if args.mode == 2: # NF4
+    bnb_quantization_config = BnbQuantizationConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=False, bnb_4bit_quant_type="nf4")
+    model = load_and_quantize_model(
+        model, 
+        weights_location=os.path.join(model_path, "ema.safetensors"), 
+        bnb_quantization_config=bnb_quantization_config,
+        device_map=device_map,
+        offload_folder="offload",
+    ).eval()
+elif args.mode == 3: # INT8
+    bnb_quantization_config = BnbQuantizationConfig(load_in_8bit=True, torch_dtype=torch.bfloat16)
+    model = load_and_quantize_model(
+        model, 
+        weights_location=os.path.join(model_path, "ema.safetensors"), 
+        bnb_quantization_config=bnb_quantization_config,
+        device_map=device_map,
+        offload_folder="offload",
+    ).eval()
+```
+
+## TensorRT-LLM
+### Installation
+```bash
+sudo apt-get -y install libopenmpi-dev
+pip3 install --upgrade pip setuptools
+# Install torch+cu before tensorrt_llm
+pip3 install torch==2.7.0+cu128 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# Find suitable released version of TensorRT-LLM, match the corresponding torch version.
+pip3 install tensorrt_llm==v0.20.0  # The first stable version switching to PyTorch 2.7.0
+```
+
+### TODO
+
+<br>
+
 # 💪 Train & Eval
 ## Train
 ```bash

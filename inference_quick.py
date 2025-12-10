@@ -169,24 +169,24 @@ torch.backends.cudnn.benchmark = False
 # ## TaylorSeer/SpeCa Support for Inference Acceleration
 
 # %%
-inference_hyper=dict(
-    cfg_text_scale=4.0,
-    cfg_img_scale=1.0,
-    cfg_interval=[0.4, 1.0],
-    timestep_shift=3.0,
-    num_timesteps=50,
-    cfg_renorm_min=0.0,
-    cfg_renorm_type="global",
-    enable_taylorseer=True,  # Enable TaylorSeer
-    enable_speca=True,  # Enable SpecA
-    taylor_first_enhance=10,  # TaylorSeer parameter
-    speca_base_threshold=0.1,
-    speca_decay_rate=0.05,
-    speca_min_taylor_steps=2,
-    speca_max_taylor_steps=4,
-    speca_error_metric="l1",
-    image_shapes=(1024, 1024),
-)
+# inference_hyper=dict(
+#     cfg_text_scale=4.0,
+#     cfg_img_scale=1.0,
+#     cfg_interval=[0.4, 1.0],
+#     timestep_shift=3.0,
+#     num_timesteps=50,
+#     cfg_renorm_min=0.0,
+#     cfg_renorm_type="global",
+#     enable_taylorseer=True,  # Enable TaylorSeer
+#     enable_speca=True,  # Enable SpecA
+#     taylor_first_enhance=10,  # TaylorSeer parameter
+#     speca_base_threshold=0.1,
+#     speca_decay_rate=0.05,
+#     speca_min_taylor_steps=2,
+#     speca_max_taylor_steps=4,
+#     speca_error_metric="l1",
+#     image_shapes=(1024, 1024),
+# )
 
 # inference_hyper=dict(
 #     cfg_text_scale=4.0,
@@ -202,15 +202,15 @@ inference_hyper=dict(
 #     taylor_fresh_threshold=4
 # )
 
-# inference_hyper=dict(
-#     cfg_text_scale=4.0,
-#     cfg_img_scale=1.0,
-#     cfg_interval=[0.4, 1.0],
-#     timestep_shift=3.0,
-#     num_timesteps=50,
-#     cfg_renorm_min=0.0,
-#     cfg_renorm_type="global"
-# )
+inference_hyper=dict(
+    cfg_text_scale=4.0,
+    cfg_img_scale=1.0,
+    cfg_interval=[0.4, 1.0],
+    timestep_shift=3.0,
+    num_timesteps=50,
+    cfg_renorm_min=0.0,
+    cfg_renorm_type="global"
+)
 # %%
 # ...existing code...
 prompt = "A female cosplayer portraying an ethereal fairy or elf, wearing a flowing dress made of delicate fabrics in soft, mystical colors like emerald green and silver. She has pointed ears, a gentle, enchanting expression, and her outfit is adorned with sparkling jewels and intricate patterns. The background is a magical forest with glowing plants, mystical creatures, and a serene atmosphere."

@@ -28,6 +28,7 @@ import gradio as gr
 import numpy as np
 import os
 import torch
+from torchao.quantization import quantize_, float8_dynamic_activation_float8_weight
 import random
 
 from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch, init_empty_weights
@@ -374,17 +375,28 @@ print("--- End of custom device_map modifications ---")
 # adjust gpu vram end
 
 
-
-
+print("[0] Loading BF16 model for conversion...")
 model = load_checkpoint_and_dispatch(
     model,
-    checkpoint=os.path.join(model_path, "ema-FP8.safetensors"),
+    checkpoint=os.path.join(model_path, "ema.safetensors"), 
     device_map=device_map,
     offload_buffers=True,
     offload_folder="offload",
-    dtype=torch.bfloat16,
+    dtype=torch.bfloat16,  # 必须先加载为 BF16
     force_hooks=True,
 ).eval()
+
+print("[1] Converting model to native FP8 compute (Linear layers)...")
+quantize_(model, float8_dynamic_activation_float8_weight())
+model = torch.compile(model, mode="max-autotune")
+
+import gc
+print("[2] Quantization done. Cleaning up memory...")
+gc.collect()
+torch.cuda.empty_cache()
+
+print(f"Current Memory Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+print(f"Current Memory Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
 
 # Inferencer Preparing 

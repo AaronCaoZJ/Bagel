@@ -104,6 +104,7 @@ elif args.mode == 3: # INT8
         offload_folder="offload",
     ).eval()
 ```
+![bitsandbytes](assets/bitsandbytes.png)
 
 ## TensorRT-LLM
 ### Installation
@@ -114,9 +115,87 @@ pip3 install --upgrade pip setuptools
 pip3 install torch==2.7.0+cu128 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 # Find suitable released version of TensorRT-LLM, match the corresponding torch version.
 pip3 install tensorrt_llm==v0.20.0  # The first stable version switching to PyTorch 2.7.0
+# Install flash-attn with corresponding version
+pip install flash-attn==2.7.4.post1 --no-build-isolation --no-cache-dir
 ```
+### Sanity Check
+```bash
+# Before run set path
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/zhijun/anaconda3/envs/trtllm/lib
+# Keep MPI on localhost and avoid fabric auto-detect stalls
+set -euo pipefail
+export OMPI_MCA_oob=tcp
+export OMPI_MCA_oob_tcp_if_include=lo
+export OMPI_MCA_oob_tcp_peer_retries=60
+export OMPI_MCA_oob_tcp_connect_sleep=10
+export OMPI_MCA_btl=self,vader,tcp
+export OMPI_MCA_btl_tcp_if_include=lo
+export OMPI_MCA_pml=ob1
+```
+Run the following Python script.
+```python
+from tensorrt_llm import LLM, SamplingParams
 
+def main():
+
+    # Model could accept HF model name, a path to local HF model,
+    # or TensorRT Model Optimizer's quantized checkpoints like nvidia/Llama-3.1-8B-Instruct-FP8 on HF.
+    llm = LLM(model="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+    # Sample prompts.
+    prompts = [
+        "Hello, my name is",
+        "The capital of France is",
+        "The future of AI is",
+    ]
+
+    # Create a sampling params.
+    sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
+
+    for output in llm.generate(prompts, sampling_params):
+        print(
+            f"Prompt: {output.prompt!r}, Generated text: {output.outputs[0].text!r}"
+        )
+
+    # Got output like
+    # Prompt: 'Hello, my name is', Generated text: '\n\nJane Smith. I am a student pursuing my degree in Computer Science at [university]. I enjoy learning new things, especially technology and programming'
+    # Prompt: 'The president of the United States is', Generated text: 'likely to nominate a new Supreme Court justice to fill the seat vacated by the death of Antonin Scalia. The Senate should vote to confirm the'
+    # Prompt: 'The capital of France is', Generated text: 'Paris.'
+    # Prompt: 'The future of AI is', Generated text: 'an exciting time for us. We are constantly researching, developing, and improving our platform to create the most advanced and efficient model available. We are'
+
+if __name__ == '__main__':
+    main()
+```
 ### TODO
+
+
+## TorchAO
+PyTorch-Native Training-to-Serving Model Optimization, easiest way to deploy FP8 models.
+```bash
+pip install torchao
+```
+```python
+from torchao.quantization import quantize_, loat8_dynamic_activation_float8_weight
+
+##############################################
+#  Load 'BF16' checkpoint and dispatch code  #
+##############################################
+
+quantize_(model, float_dynamic_activation_float8_weight())
+model = torch.compile(model, mode="max-autotune")
+```
+After quantization and before inference, clean VRAM allocation due to loading BF16 checkpoint.
+```python
+import gc
+
+gc.collect()
+torch.cuda.empty_cache()
+
+##############################################
+#              inference code                #
+##############################################
+```
+![torchao](assets/torchao.png)
 
 <br>
 

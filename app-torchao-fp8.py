@@ -34,6 +34,7 @@ import random
 from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch, init_empty_weights
 from PIL import Image
 
+from scripts.export_precision_report import export_precision_report
 from data.data_utils import add_special_tokens, pil_img2rgb
 from data.transforms import ImageTransform
 from inferencer import InterleaveInferencer
@@ -374,8 +375,8 @@ print("--- End of custom device_map modifications ---")
 
 # adjust gpu vram end
 
-
-print("[0] Loading BF16 model for conversion...")
+# Quantization process
+print("[QUANT-LOAD-BF16] Loading BF16 model for conversion...")
 model = load_checkpoint_and_dispatch(
     model,
     checkpoint=os.path.join(model_path, "ema.safetensors"), 
@@ -386,18 +387,27 @@ model = load_checkpoint_and_dispatch(
     force_hooks=True,
 ).eval()
 
-print("[1] Converting model to native FP8 compute (Linear layers)...")
+print("[QUANT-TO-FP8] Converting model to native FP8 compute (Linear layers)...")
 quantize_(model, float8_dynamic_activation_float8_weight())
 model = torch.compile(model, mode="max-autotune")
 
 import gc
-print("[2] Quantization done. Cleaning up memory...")
+print("[QUANT-MEMORY-CHECK] Quantization done. Cleaning up memory...")
 gc.collect()
 torch.cuda.empty_cache()
+print(f"[QUANT-MEMORY-CHECK] Current Memory Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+print(f"[QUANT-MEMORY-CHECK] Current Memory Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
-print(f"Current Memory Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-print(f"Current Memory Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
-
+export_precision_report(model, "model_precision_report.txt")
+save_path = os.path.join(model_path, "bagel_fp8_quantized.pt")
+print(f"[SAVE] Saving quantized model to {save_path}...")
+try:
+    # 注意：我们只保存 state_dict 以节省空间和避免序列化整个模型结构的问题
+    # torchao 的量化权重通常可以被正常序列化
+    torch.save(model.state_dict(), save_path)
+    print(f"[QUANT-SAVE] Model saved successfully. Size: {os.path.getsize(save_path) / 1024**3:.2f} GB")
+except Exception as e:
+    print(f"[QUANT-SAVE] Error saving model: {e}")
 
 # Inferencer Preparing 
 inferencer = InterleaveInferencer(

@@ -1,7 +1,7 @@
 # 🍩 Quick Start
 ## Set up Environment
 ```bash
-git clone https://github.com/bytedance-seed/BAGEL.git
+git clone https://github.com/AaronCaoZJ/BAGEL.git
 cd BAGEL
 conda create -n bagel python=3.10 -y
 conda activate bagel
@@ -17,7 +17,7 @@ pip install flash-attn==2.8.3 --no-build-isolation
 from huggingface_hub import snapshot_download
 
 save_dir = "models/BAGEL-7B-MoT"
-repo_id = "ByteDance-Seed/BAGEL-7B-MoT"
+repo_id = "aaroncaozj/BAGEL-7B-MoT_FP8"
 cache_dir = save_dir + "/cache"
 
 snapshot_download(cache_dir=cache_dir,
@@ -30,15 +30,7 @@ snapshot_download(cache_dir=cache_dir,
 ## Use Gradio WebUI to Play with BAGEL
 ```bash
 # For 32GB+ VRAM GPU or multi GPUs.
-python app.py
-```
-```bash
-# For 12~32GB VRAM GPU, recommend using NF4 quantization. And use Chinese interface.
-python app.py --mode 2 --zh
-```
-```bash
-# For 22~32GB VRAM GPU, not recommended to use INT8 quantization.
-python app.py  --mode 3
+python app-torchao-fp8.py
 ```
 
 ## Watch VRAM Usage
@@ -82,7 +74,7 @@ As a draft model, Taylorseer outputs the feature of each transformer block in th
 <br>
 
 # 🧩 Quantization
-## bitsandbytes
+## 1. bitsandbytes
 Check arg `--mode` in app.py.
 ```python
 if args.mode == 2: # NF4
@@ -106,7 +98,7 @@ elif args.mode == 3: # INT8
 ```
 ![bitsandbytes](assets/bitsandbytes.png)
 
-## TensorRT-LLM
+## 2. TensorRT-LLM
 ### Installation
 ```bash
 sudo apt-get -y install libopenmpi-dev
@@ -169,11 +161,14 @@ if __name__ == '__main__':
 ### TODO
 
 
-## TorchAO
+## 3. TorchAO
 PyTorch-Native Training-to-Serving Model Optimization, easiest way to deploy FP8 models.
 ```bash
-pip install torchao
+pip install torchao==0.13.0 # compatible with torch==2.8.0
 ```
+> Issue: Skipping import of cpp extensions due to incompatible torch version?  
+Please see https://github.com/pytorch/ao/issues/2919 for more info.
+>
 ```python
 from torchao.quantization import quantize_, loat8_dynamic_activation_float8_weight
 
@@ -195,6 +190,7 @@ torch.cuda.empty_cache()
 #              inference code                #
 ##############################################
 ```
+
 ![torchao](assets/torchao.png)
 
 <br>

@@ -399,15 +399,22 @@ print(f"[QUANT-MEMORY-CHECK] Current Memory Allocated: {torch.cuda.memory_alloca
 print(f"[QUANT-MEMORY-CHECK] Current Memory Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
 
 export_precision_report(model, "model_precision_report.txt")
-save_path = os.path.join(model_path, "bagel_fp8_quantized.pt")
-print(f"[SAVE] Saving quantized model to {save_path}...")
-try:
-    # 注意：我们只保存 state_dict 以节省空间和避免序列化整个模型结构的问题
-    # torchao 的量化权重通常可以被正常序列化
-    torch.save(model.state_dict(), save_path)
-    print(f"[QUANT-SAVE] Model saved successfully. Size: {os.path.getsize(save_path) / 1024**3:.2f} GB")
-except Exception as e:
-    print(f"[QUANT-SAVE] Error saving model: {e}")
+
+# save_path = os.path.join(model_path, "bagel_fp8_quantized.pt")
+# print(f"[QUANT-AVE] Saving quantized model to {save_path}...")
+# try:
+#     # 注意：我们只保存 state_dict 以节省空间和避免序列化整个模型结构的问题
+#     # torchao 的量化权重通常可以被正常序列化
+#     torch.save(model.state_dict(), save_path)
+#     print(f"[QUANT-SAVE] Model saved successfully. Size: {os.path.getsize(save_path) / 1024**3:.2f} GB")
+# except Exception as e:
+#     print(f"[QUANT-SAVE] Error saving model: {e}")
+
+out_path = "model_fp8.safetensors"
+
+from scripts.save_safetensors_from_torchao import save_model_to_safetensors, load_model_from_safetensors
+save_model_to_safetensors(model, out_path)
+
 
 # Inferencer Preparing 
 inferencer = InterleaveInferencer(

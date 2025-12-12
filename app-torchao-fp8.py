@@ -410,10 +410,9 @@ export_precision_report(model, "model_precision_report.txt")
 # except Exception as e:
 #     print(f"[QUANT-SAVE] Error saving model: {e}")
 
-out_path = "model_fp8.safetensors"
-
-from scripts.save_safetensors_from_torchao import save_model_to_safetensors, load_model_from_safetensors
-save_model_to_safetensors(model, out_path)
+# from scripts.save_safetensors_from_torchao import save_model_to_safetensors, load_model_from_safetensors
+# out_path = "model_fp8.safetensors"
+# save_model_to_safetensors(model, out_path)
 
 
 # Inferencer Preparing 

@@ -28,7 +28,11 @@ import gradio as gr
 import numpy as np
 import os
 import torch
-from torchao.quantization import quantize_, float8_dynamic_activation_float8_weight
+from torchao.quantization import quantize_
+from torchao.quantization import (
+    float8_dynamic_activation_float8_weight, float8_weight_only,
+    int8_weight_only, int4_weight_only
+)
 import random
 
 from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch, init_empty_weights
@@ -205,7 +209,7 @@ def get_all_memory_stats_for_gradio_display():
 # If you have 60GB CPU vram，there are 55GiB (Leave some vram)
 
 cpu_mem_for_offload = "16GiB"
-gpu_mem_per_device = "31GiB" # Your GPU Vram
+gpu_mem_per_device = "31GiB" # TOCHANGE
 
 max_memory_config = {i: gpu_mem_per_device for i in range(torch.cuda.device_count())}
 if torch.cuda.device_count() == 0: # If there is no GPU, a basic configuration is also required
@@ -387,8 +391,8 @@ model = load_checkpoint_and_dispatch(
     force_hooks=True,
 ).eval()
 
-print("[QUANT-TO-FP8] Converting model to native FP8 compute (Linear layers)...")
-quantize_(model, float8_dynamic_activation_float8_weight())
+print("[QUANT-TO-LOW-PRECISION] Converting model to native FP8 compute (Linear layers)...")
+quantize_(model, float8_dynamic_activation_float8_weight()) # TOCHANGE
 model = torch.compile(model, mode="max-autotune")
 
 import gc

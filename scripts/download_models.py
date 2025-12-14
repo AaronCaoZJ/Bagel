@@ -3,8 +3,8 @@ from huggingface_hub import snapshot_download
 # save_dir = "models/BAGEL-7B-MoT"
 # repo_id = "ByteDance-Seed/BAGEL-7B-MoT"
 
-save_dir = "/home/zhijun/Code/Bagel/models/BAGEL-7B-MoT-FP8"
-repo_id = "meimeilook/BAGEL-7B-MoT-FP8"
+save_dir = "/home/zhijun/Code/Bagel/models/BAGEL-7B-MoT_FP8"
+repo_id = "aaroncaozj/BAGEL-7B-MoT_FP8"
 cache_dir = save_dir + "/cache"
 
 snapshot_download(cache_dir=cache_dir,

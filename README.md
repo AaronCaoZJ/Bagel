@@ -30,7 +30,7 @@ snapshot_download(cache_dir=cache_dir,
 ## Use Gradio WebUI to Play with BAGEL
 ```bash
 # For 32GB+ VRAM GPU or multi GPUs.
-python app-torchao-fp8.py
+python app-torchao.py
 ```
 
 ## Watch VRAM Usage

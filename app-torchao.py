@@ -28,11 +28,14 @@ import gradio as gr
 import numpy as np
 import os
 import torch
+
+# 需要安装对应版本的torchao https://github.com/pytorch/ao/issues/2919
 from torchao.quantization import quantize_
 from torchao.quantization import (
     float8_dynamic_activation_float8_weight, float8_weight_only,
-    int8_weight_only, int4_weight_only
+    int8_weight_only, int4_weight_only, int8_dynamic_activation_int8_weight
 )
+
 import random
 
 from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch, init_empty_weights
@@ -82,7 +85,7 @@ config = BagelConfig(
     vit_max_num_patch_per_side=70,
     connector_act='gelu_pytorch_tanh',
     latent_patch_size=2,
-    max_latent_size=64,
+    max_latent_size=64, # 96
 )
 
 with init_empty_weights():
@@ -97,37 +100,7 @@ tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
 vae_transform = ImageTransform(1024, 512, 16)
 vit_transform = ImageTransform(980, 224, 14)
 
-# # Model Loading and Multi GPU Infernece Preparing
-# device_map = infer_auto_device_map(
-#     model,
-#     max_memory={i: "24GiB" for i in range(torch.cuda.device_count())},
-#     no_split_module_classes=["Bagel", "Qwen2MoTDecoderLayer"],
-# )
 
-# same_device_modules = [
-#     'language_model.model.embed_tokens',
-#     'time_embedder',
-#     'latent_pos_embed',
-#     'vae2llm',
-#     'llm2vae',
-#     'connector',
-#     'vit_pos_embed'
-# ]
-
-# if torch.cuda.device_count() == 1:
-#     first_device = device_map.get(same_device_modules[0], "cuda:0")
-#     for k in same_device_modules:
-#         if k in device_map:
-#             device_map[k] = first_device
-#         else:
-#             device_map[k] = "cuda:0"
-# else:
-#     first_device = device_map.get(same_device_modules[0])
-#     for k in same_device_modules:
-#         if k in device_map:
-#             device_map[k] = first_device
-
-# --- new changes ---
 print("Starting model loading and device map configuration...")
 
 # --- ram & vram helps functions ---
@@ -204,11 +177,7 @@ def get_all_memory_stats_for_gradio_display():
 
 
 # ram & vram setting
-# ram & vram setting
-# ram & vram setting  edit by your spec
-# If you have 60GB CPU vram，there are 55GiB (Leave some vram)
-
-cpu_mem_for_offload = "16GiB"
+cpu_mem_for_offload = "0GiB"
 gpu_mem_per_device = "31GiB" # TOCHANGE
 
 max_memory_config = {i: gpu_mem_per_device for i in range(torch.cuda.device_count())}
@@ -264,7 +233,7 @@ print("Device map after same_device_modules logic:")
 for k, v_map in device_map.items():
     print(f"  {k}: {v_map}")
 
-# key point 2：make sure no 'disk'  (backup)
+# make sure no 'disk'  (backup)
 keys_to_change_to_cpu = []
 for module_name, device_assignment in device_map.items():
     if device_assignment == "disk":
@@ -279,7 +248,7 @@ if keys_to_change_to_cpu:
         print(f"  {k}: {v_map}")
 else:
     print("No layers assigned to 'disk' by infer_auto_device_map, or they were already handled. Final device_map is as above.")
-# --- fix model loadding end ---
+
 
 # adjust layers more clearly&detail to GPU
 # make sure，The device_map only contains GPU indexes (such as 0) or 'cpu'.
@@ -290,9 +259,6 @@ for k_map_item, v_map_item in device_map.items():
 
 
 # -- Key tuning parameters Start --
-
-
-
 # 1. Try to move more LLM Transformer layers (layers 11 to 27) to GPU 0
 # These layers are currently on the CPU. There are a total of 17 such layers (ranging from 11 to 27).
 # You can set the number of LLM layers that you wish to move from the CPU to GPU 0.
@@ -385,39 +351,76 @@ model = load_checkpoint_and_dispatch(
     model,
     checkpoint=os.path.join(model_path, "ema.safetensors"), 
     device_map=device_map,
-    offload_buffers=True,
+    offload_buffers=False, # 禁用缓冲区卸载
     offload_folder="offload",
-    dtype=torch.bfloat16,  # 必须先加载为 BF16
-    force_hooks=True,
+    dtype=torch.bfloat16,  # 必须先加载为BF16
+    force_hooks=False,  # 禁用钩子强制转换，允许使用compile
 ).eval()
 
 print("[QUANT-TO-LOW-PRECISION] Converting model to native FP8 compute (Linear layers)...")
-quantize_(model, float8_dynamic_activation_float8_weight()) # TOCHANGE
-model = torch.compile(model, mode="max-autotune")
+quantize_(model, float8_dynamic_activation_float8_weight())  # TOCHANGE: 可选其他量化方案如int8_weight_only
 
-import gc
-print("[QUANT-MEMORY-CHECK] Quantization done. Cleaning up memory...")
-gc.collect()
-torch.cuda.empty_cache()
-print(f"[QUANT-MEMORY-CHECK] Current Memory Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-print(f"[QUANT-MEMORY-CHECK] Current Memory Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+# --- 内存布局优化 ---
+# 将language_model转换为channels_last内存格式
+print("[QUANT-OPTIMIZE] Converting to channels_last memory format...")
+if hasattr(model, 'language_model'):
+    model.language_model = model.language_model.to(memory_format=torch.channels_last)
 
-export_precision_report(model, "model_precision_report.txt")
+# --- 配置torch编译器 ---
+print("[QUANT-COMPILE] Configuring torch._dynamo for Bagel model compatibility...")
+import torch._dynamo
+# 允许捕获模型中使用.item()的标量输出（Bagel模型需要此功能）
+torch._dynamo.config.capture_scalar_outputs = True
+torch._dynamo.config.suppress_errors = False
+print("[QUANT-COMPILE] ✅ capture_scalar_outputs enabled for .item() support")
 
-# save_path = os.path.join(model_path, "bagel_fp8_quantized.pt")
-# print(f"[QUANT-AVE] Saving quantized model to {save_path}...")
-# try:
-#     # 注意：我们只保存 state_dict 以节省空间和避免序列化整个模型结构的问题
-#     # torchao 的量化权重通常可以被正常序列化
-#     torch.save(model.state_dict(), save_path)
-#     print(f"[QUANT-SAVE] Model saved successfully. Size: {os.path.getsize(save_path) / 1024**3:.2f} GB")
-# except Exception as e:
-#     print(f"[QUANT-SAVE] Error saving model: {e}")
+# --- 启用图缓存 ---
+# 启用fx_graph_cache避免相同输入形状时重复编译，一般编译最多8种不同尺寸的输入后会复用已编译的kernel
+print("[QUANT-COMPILE] Checking language_model device distribution...")
+torch._inductor.config.fx_graph_cache = True
 
-# from scripts.save_safetensors_from_torchao import save_model_to_safetensors, load_model_from_safetensors
-# out_path = "model_fp8.safetensors"
-# save_model_to_safetensors(model, out_path)
+# --- 检查设备分布并选择编译策略 ---
+# 检查language_model的参数分布在哪些GPU上
+if hasattr(model, 'language_model'):
+    devices_used = set()
+    for name, param in model.language_model.named_parameters():
+        if param.device.type == 'cuda':
+            devices_used.add(param.device.index)
+    print(f"[QUANT-COMPILE] language_model spans devices: {sorted(devices_used)}")
+    
+    if len(devices_used) > 1:
+        print("[QUANT-COMPILE] ⚠️  PROBLEM: language_model spans multiple GPUs")
+        print("[QUANT-COMPILE] torch.compile CANNOT optimize cross-device modules")
+        
+        # 遍历每一层，根据其所在设备单独编译
+        for i, layer in enumerate(model.language_model.model.layers):
+            layer_device = next(layer.parameters()).device
+            print(f"[QUANT-COMPILE] Compiling layer {i} on {layer_device}...", end=" ")
+            model.language_model.model.layers[i] = torch.compile(
+                layer,
+                mode="max-autotune",
+                fullgraph=True
+            )
+            print("✅")
+        print("[QUANT-COMPILE] ✅ All layers compiled individually")
+    else:
+        print(f"[QUANT-COMPILE] ✅ language_model is on single device, can compile as whole")
+        model.language_model = torch.compile(
+            model.language_model,
+            mode="max-autotune",
+            fullgraph=True,
+            dynamic=False   # dynamic=True可以支持动态shape，稍牺牲极致速度，可以使用简化的warmup
+        )
+        print("[QUANT-COMPILE] ✅ language_model compiled successfully")
 
+# import gc
+# print("[QUANT-MEMORY-CHECK] Quantization done. Cleaning up memory...")
+# gc.collect()
+# torch.cuda.empty_cache()
+# print(f"[QUANT-MEMORY-CHECK] Current Memory Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+# print(f"[QUANT-MEMORY-CHECK] Current Memory Reserved:  {torch.cuda.memory_reserved() / 1024**3:.2f} GB")
+
+# export_precision_report(model, "model_precision_report.txt")
 
 # Inferencer Preparing 
 inferencer = InterleaveInferencer(
@@ -442,6 +445,163 @@ def set_seed(seed):
         torch.backends.cudnn.benchmark = False
     return seed
 
+# # --- 简化的warmup，适用于dynamic=True编译 ---
+# print("[WARMUP] Triggering torch.compile (dynamic mode)...")
+# try:
+#     # 只需一次warmup，任意尺寸即可触发编译
+#     with torch.no_grad():
+#         _ = inferencer(
+#             text="Single warmup",
+#             num_timesteps=10,
+#             max_think_token_n=64,
+#             think=False,
+#             cfg_text_scale=4.0,
+#             cfg_interval=[0.4, 1.0],
+#             timestep_shift=3.0,
+#             cfg_renorm_min=1.0,
+#             cfg_renorm_type="global",
+#             image_shapes=(1024, 1024),
+#         )
+#     print("[WARMUP] ✅ Dynamic kernel compiled, all sizes ready")
+# except Exception as e:
+#     print(f"[WARMUP] Warning: {e}")
+
+# --- Warmup （3阶段：快速预热+完整文本生图+图像编辑）---
+print("==========================================================")
+print("[WARMUP] Starting warmup to trigger torch.compile AUTOTUNE...")
+print("[WARMUP] Precompiling for multiple modes and sizes...")
+print("==========================================================")
+
+# 启用详细的编译日志
+import os
+os.environ['TORCH_LOGS'] = '+dynamo,recompiles'
+os.environ['TORCHDYNAMO_VERBOSE'] = '1'
+os.environ['TORCH_CUDAGRAPHS_VERBOSE'] = '0'
+import warnings
+warnings.filterwarnings('ignore', message='.*cudagraphs.*')
+print("[WARMUP] Enabled verbose compilation logging...")
+
+try:
+    # 定义需要预热的常见尺寸
+    common_sizes = [(1024, 1024), (1024, 768), (768, 1024)]
+    
+    import time
+    total_warmup_start = time.time()
+    
+    # ===== 阶段1：快速预热所有尺寸（10步） =====
+    # 使用较少的步数（10步）快速遍历所有尺寸
+    print("\n[WARMUP] Phase 1: Text-to-Image quick precompilation (10 timesteps)...")
+    print(f"[WARMUP] Will compile kernels for {len(common_sizes)} different sizes...")
+    
+    warmup_quick_config = dict(
+        text="Quick warmup",      # 简单提示词
+        num_timesteps=10,
+        max_think_token_n=64,
+        think=False,
+        cfg_text_scale=4.0,
+        cfg_interval=[0.4, 1.0],
+        timestep_shift=3.0,
+        cfg_renorm_min=1.0,
+        cfg_renorm_type="global",
+    )
+    
+    for size_idx, size in enumerate(common_sizes):
+        print(f"  [{size_idx+1}/{len(common_sizes)}] Compiling {size[0]}x{size[1]}...", end=" ")
+        warmup_config = {**warmup_quick_config, "image_shapes": size}
+        start = time.time()
+        with torch.no_grad():
+            _ = inferencer(**warmup_config)
+        elapsed = time.time() - start
+        print(f"T2I💖 {elapsed:.1f}s")
+    
+    # ===== 阶段2：完整步数预热（50步） =====
+    # 让max-autotune模式有足够时间选择最优kernel
+    print("\n[WARMUP] Phase 2: Text-to-Image full precompilation (50 timesteps)...")
+    print("[WARMUP] Running full generation to let max-autotune select best kernels...")
+    
+    warmup_full_config = dict(
+        text="A warmup test image",
+        num_timesteps=50,          # 完整的50步
+        max_think_token_n=1024,    # 标准token数
+        think=False,
+        cfg_text_scale=4.0,
+        cfg_interval=[0.4, 1.0],
+        timestep_shift=3.0,
+        cfg_renorm_min=1.0,
+        cfg_renorm_type="global",
+        image_shapes=(1024, 1024), # 最常用尺寸
+    )
+    
+    # 运行2次：第1次编译，第2次验证缓存生效
+    for run in range(2):
+        start = time.time()
+        with torch.no_grad():
+            _ = inferencer(**warmup_full_config)
+        elapsed = time.time() - start
+        
+        if run == 0:
+            print(f"  → Run 1: {elapsed:.1f}s (compiling + optimizing)")
+        else:
+            print(f"  → Run 2: {elapsed:.1f}s (using cached kernels)")
+    
+    # ===== 阶段3：预热图像编辑模式（50步） =====
+    print("\n[WARMUP] Phase 3: Image Editing precompilation (50 timesteps)...")
+    print("[WARMUP] Compiling kernels for image-to-image pipeline...")
+    
+    # 创建虚拟图像用于warmup（无需真实内容，只是触发编译）
+    from PIL import Image
+    dummy_image_1024x768 = Image.new('RGB', (1024, 768), color='gray')
+    dummy_image_768x1024 = Image.new('RGB', (768, 1024), color='gray')
+    dummy_image_1024x1024 = Image.new('RGB', (1024, 1024), color='gray')
+    
+    edit_sizes = [
+        (dummy_image_1024x768, "1024x768"),  # 横向编辑
+        (dummy_image_768x1024, "768x1024"),  # 纵向编辑
+        (dummy_image_1024x1024, "1024x1024"),  # 标准尺寸编辑
+    ]
+    
+    warmup_edit_config = dict(
+        text="Edit this image",
+        num_timesteps=50,
+        max_think_token_n=1024,
+        think=False,
+        cfg_text_scale=4.0,
+        cfg_img_scale=2.0,
+        cfg_interval=[0.0, 1.0],
+        timestep_shift=3.0,
+        cfg_renorm_min=1.0,
+        cfg_renorm_type="text_channel",
+    )
+    
+    for dummy_img, size_name in edit_sizes:
+        print(f"  Compiling image editing @ {size_name}...", end=" ")
+        start = time.time()
+        with torch.no_grad():
+            _ = inferencer(image=dummy_img, **warmup_edit_config)
+        elapsed = time.time() - start
+        print(f"I2I💖 {elapsed:.1f}s")
+    
+    # 总结warmup结果
+    total_elapsed = time.time() - total_warmup_start
+    print(f"\n{'='*60}")
+    print(f"[WARMUP] ✅ All modes precompiled in {total_elapsed/60:.1f} minutes")
+    print(f"[WARMUP] ✅ Text-to-Image: 5 sizes @ 10 steps + 1024x1024 @ 50 steps")
+    print(f"[WARMUP] ✅ Image Editing: 2 sizes @ 50 steps")
+    print(f"[WARMUP] ✅ Subsequent user requests will be fast (using cached kernels)")
+    print(f"{'='*60}\n")
+    
+except Exception as e:
+    # 如果warmup失败，不应该阻止程序继续运行
+    # 用户的第一次请求会触发编译（稍慢但不影响功能）
+    print(f"\n[WARMUP] ⚠️  Warning: Warmup encountered an error: {e}")
+    import traceback
+    traceback.print_exc()
+    print("[WARMUP] ⚠️  Model will compile during first user request (may be slower).")
+    print("="*60 + "\n")
+else:
+    print("[WARMUP] ⏭️  Skipping warmup (SKIP_WARMUP=True)")
+    print("="*60 + "\n")
+
 # Text to Image function with thinking option and hyperparameters
 def text_to_image(prompt, show_thinking=False, cfg_text_scale=4.0, cfg_interval=0.4, 
                  timestep_shift=3.0, num_timesteps=50, 
@@ -457,10 +617,6 @@ def text_to_image(prompt, show_thinking=False, cfg_text_scale=4.0, cfg_interval=
         image_shapes = (768, 1024)
     elif image_ratio == "3:4":
         image_shapes = (1024, 768) 
-    elif image_ratio == "16:9":
-        image_shapes = (576, 1024)
-    elif image_ratio == "9:16":
-        image_shapes = (1024, 576) 
     
     # Set hyperparameters
     inference_hyper = dict(
@@ -602,7 +758,7 @@ with gr.Blocks() as demo:
                 with gr.Row():
                     seed = gr.Slider(minimum=0, maximum=1000000, value=0, step=1, 
                                    label="Seed", info="0 for random seed, positive for reproducible results")
-                    image_ratio = gr.Dropdown(choices=["1:1", "4:3", "3:4", "16:9", "9:16"], 
+                    image_ratio = gr.Dropdown(choices=["1:1", "4:3", "3:4"], 
                                                 value="1:1", label="Image Ratio", 
                                                 info="The longer size is fixed to 1024")
                     
@@ -683,10 +839,10 @@ with gr.Blocks() as demo:
     with gr.Tab("🖌️ Image Edit"):
         with gr.Row():
             with gr.Column(scale=1):
-                edit_image_input = gr.Image(label="Input Image", value=load_example_image('test_images/women.jpg'))
+                edit_image_input = gr.Image(label="Input Image", value=load_example_image('test_images/20251222-113154.jpg'))
                 edit_prompt = gr.Textbox(
                     label="Prompt",
-                    value="She boards a modern subway, quietly reading a folded newspaper, wearing the same clothes."
+                    value="人物在沙滩上奔跑，穿着夏日服装，背景是阳光明媚的海滩和蓝天白云，整体氛围轻松愉快，色彩鲜艳。"
                 )
             
             with gr.Column(scale=1):

@@ -106,7 +106,6 @@ if args.mode == 1:
         model,
         checkpoint=os.path.join(model_path, "ema.safetensors"),
         device_map=device_map,
-        # device_map="auto",
         offload_buffers=True,
         offload_folder="offload",
         dtype=torch.bfloat16,

@@ -98,7 +98,7 @@ elif args.mode == 3: # INT8
 ```
 ![bitsandbytes](assets/bitsandbytes.png)
 
-## 2. TensorRT-LLM
+## 2. TensorRT-LLM # TODO
 ### Installation
 ```bash
 sudo apt-get -y install libopenmpi-dev
@@ -158,10 +158,9 @@ def main():
 if __name__ == '__main__':
     main()
 ```
-### TODO
 
 
-## 3. TorchAO
+## 3. TorchAO + Compile
 PyTorch-Native Training-to-Serving Model Optimization, easiest way to deploy FP8 models.
 ```bash
 pip install torchao==0.13.0 # compatible with torch==2.8.0
@@ -170,28 +169,37 @@ pip install torchao==0.13.0 # compatible with torch==2.8.0
 Please see https://github.com/pytorch/ao/issues/2919 for more info.
 >
 ```python
-from torchao.quantization import quantize_, loat8_dynamic_activation_float8_weight
+from torchao.quantization import quantize_
+from torchao.quantization import (
+    float8_dynamic_activation_float8_weight, float8_weight_only,
+    int8_weight_only, int4_weight_only, int8_dynamic_activation_int8_weight
+)
 
-##############################################
-#  Load 'BF16' checkpoint and dispatch code  #
-##############################################
+model = load_checkpoint_and_dispatch(
+    model,
+    checkpoint=os.path.join(model_path, "ema.safetensors"), 
+    device_map=device_map,
+    offload_buffers=False, # 禁用缓冲区卸载
+    offload_folder="offload",
+    dtype=torch.bfloat16,  # 必须先加载为BF16
+    force_hooks=False,  # 禁用钩子强制转换，允许使用compile
+).eval()
 
 quantize_(model, float_dynamic_activation_float8_weight())
 model = torch.compile(model, mode="max-autotune")
 ```
-After quantization and before inference, clean VRAM allocation due to loading BF16 checkpoint.
-```python
-import gc
-
-gc.collect()
-torch.cuda.empty_cache()
-
-##############################################
-#              inference code                #
-##############################################
+After quantization and before actual inference, compile the computation graph of the target image generation size.
+1. Iterate through common sizes common_sizes = [(1024, 1024), (1024, 768), (768, 1024)]
+2. Use 50 steps of warmup, select the optimal kernel and cache it
+3. Perform warmup for t2i and i2i respectively
+```bash
+[WARMUP] ✅ All modes precompiled in 44.7 minutes
+[WARMUP] ✅ Text-to-Image: 5 sizes @ 10 steps + 1024x1024 @ 50 steps
+[WARMUP] ✅ Image Editing: 3 sizes @ 50 steps
+[WARMUP] ✅ Subsequent user requests will be fast (using cached kernels)
 ```
 
-![torchao](assets/torchao.png)
+![torchao](assets/torchao-fp8dq.png)
 
 <br>
 

@@ -1,4 +1,3 @@
-# new add
 import time
 import psutil
 import platform  
@@ -103,7 +102,7 @@ vit_transform = ImageTransform(980, 224, 14)
 
 print("Starting model loading and device map configuration...")
 
-# --- ram & vram helps functions ---
+# ===== ram & vram helps functions =====
 def get_gpu_memory_stats_pynvml(device_id=0):
     if not pynvml_available:
         return f"GPU-{device_id} (pynvml): Not available."
@@ -173,10 +172,10 @@ def get_all_memory_stats_for_gradio_display():
     stats_lines.append(get_process_ram_stats())
     
     return "\n".join(s for s in stats_lines if s)
-# --- ram & vram helps functions end ---
+# ===== ram & vram helps functions end =====
 
 
-# ram & vram setting
+# ===== ram & vram setting for device_map =====
 cpu_mem_for_offload = "0GiB"
 gpu_mem_per_device = "31GiB" # TOCHANGE
 
@@ -228,7 +227,6 @@ elif torch.cuda.device_count() == 0 and "cpu" in max_memory_config: # without GP
     for k_module in same_device_modules:
         device_map[k_module] = "cpu"
 
-
 print("Device map after same_device_modules logic:")
 for k, v_map in device_map.items():
     print(f"  {k}: {v_map}")
@@ -258,7 +256,7 @@ for k_map_item, v_map_item in device_map.items():
     print(f"  {k_map_item}: {v_map_item}")
 
 
-# -- Key tuning parameters Start --
+# ===== Key tuning parameters Start =====
 # 1. Try to move more LLM Transformer layers (layers 11 to 27) to GPU 0
 # These layers are currently on the CPU. There are a total of 17 such layers (ranging from 11 to 27).
 # You can set the number of LLM layers that you wish to move from the CPU to GPU 0.
@@ -277,8 +275,7 @@ TRY_MOVE_LLM_NORM_HEAD_TO_GPU = True # <--- Default True, Turn to False,If you d
 # And there is still a considerable amount of video memory left.
     
 TRY_MOVE_VIT_MODEL_TO_GPU = False   # <--- Default False , can be test
-
-# --- Adjust end ---
+# ===== Key tuning parameters end =====
 
 
 # run LLM layers move
@@ -304,7 +301,7 @@ if NUM_ADDITIONAL_LLM_LAYERS_TO_GPU > 0:
 else:
     print("\nSkipping promotion of additional LLM layers based on NUM_ADDITIONAL_LLM_LAYERS_TO_GPU setting.")
 
-# run LLM norm  & lm_head move
+# run LLM norm & lm_head move
 if TRY_MOVE_LLM_NORM_HEAD_TO_GPU:
     print("\nAttempting to move LLM 'norm' and 'lm_head' to GPU 0 (if on CPU)...")
     llm_aux_modules = ["language_model.model.norm", "language_model.model.lm_head"]
@@ -445,28 +442,7 @@ def set_seed(seed):
         torch.backends.cudnn.benchmark = False
     return seed
 
-# # --- 简化的warmup，适用于dynamic=True编译 ---
-# print("[WARMUP] Triggering torch.compile (dynamic mode)...")
-# try:
-#     # 只需一次warmup，任意尺寸即可触发编译
-#     with torch.no_grad():
-#         _ = inferencer(
-#             text="Single warmup",
-#             num_timesteps=10,
-#             max_think_token_n=64,
-#             think=False,
-#             cfg_text_scale=4.0,
-#             cfg_interval=[0.4, 1.0],
-#             timestep_shift=3.0,
-#             cfg_renorm_min=1.0,
-#             cfg_renorm_type="global",
-#             image_shapes=(1024, 1024),
-#         )
-#     print("[WARMUP] ✅ Dynamic kernel compiled, all sizes ready")
-# except Exception as e:
-#     print(f"[WARMUP] Warning: {e}")
-
-# --- Warmup （3阶段：快速预热+完整文本生图+图像编辑）---
+# ===== Warmup （3阶段：快速预热+完整文本生图+图像编辑）=====
 print("==========================================================")
 print("[WARMUP] Starting warmup to trigger torch.compile AUTOTUNE...")
 print("[WARMUP] Precompiling for multiple modes and sizes...")
@@ -586,7 +562,7 @@ try:
     print(f"\n{'='*60}")
     print(f"[WARMUP] ✅ All modes precompiled in {total_elapsed/60:.1f} minutes")
     print(f"[WARMUP] ✅ Text-to-Image: 5 sizes @ 10 steps + 1024x1024 @ 50 steps")
-    print(f"[WARMUP] ✅ Image Editing: 2 sizes @ 50 steps")
+    print(f"[WARMUP] ✅ Image Editing: 3 sizes @ 50 steps")
     print(f"[WARMUP] ✅ Subsequent user requests will be fast (using cached kernels)")
     print(f"{'='*60}\n")
     

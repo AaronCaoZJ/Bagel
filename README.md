@@ -199,7 +199,7 @@ After quantization and before actual inference, compile the computation graph of
 [WARMUP] ✅ Subsequent user requests will be fast (using cached kernels)
 ```
 
-![torchao](assets/torchao-fp8dq.png)
+![torchao](assets/ao-compile.png)
 
 <br>
 

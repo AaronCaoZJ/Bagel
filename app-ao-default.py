@@ -1,3 +1,4 @@
+#%% Imports
 import time
 import psutil
 import platform
@@ -31,6 +32,9 @@ from typing import Dict, Tuple, Optional, List
 
 import gradio as gr
 import numpy as np
+
+os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/home/zhijun/Code/Bagel/triton"
+os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
 import torch
 import torch._dynamo
 import torch._inductor
@@ -60,7 +64,7 @@ from modeling.bagel import (
 )
 from modeling.qwen2 import Qwen2Tokenizer
 
-#region == Constants and Configuration =======================================
+#%% Constants and Configuration
 # Image ratio configurations
 IMAGE_RATIOS = {
     "1:1": (1024, 1024),
@@ -120,9 +124,8 @@ SAME_DEVICE_MODULES = [
     'connector',
     'vit_pos_embed'
 ]
-#endregion ===================================================================
 
-#region == Memory Statistics Functions =======================================
+#%% Memory Statistics Functions
 def get_gpu_memory_stats_pynvml(device_id: int = 0) -> str:
     """Get GPU memory stats using pynvml."""
     if not pynvml_available:
@@ -200,9 +203,8 @@ def get_all_memory_stats() -> str:
     stats_lines.append(get_process_ram_stats())
     
     return "\n".join(stats_lines)
-#endregion ===================================================================
 
-#region == Model Device Map Configuration ====================================
+#%% Model Device Map Configuration
 def create_device_map(model):
     """Create and configure device map for model distribution."""
     max_memory_config = {i: GPU_MEM_PER_DEVICE for i in range(torch.cuda.device_count())}
@@ -271,9 +273,8 @@ def optimize_device_map(device_map):
     
     print("=== Device map optimization complete ===\n")
     return device_map
-#endregion ===================================================================
 
-#region == Model Loading and Quantization ====================================
+#%% Model Loading and Quantization
 def load_and_quantize_model(model_path: str):
     """Load model configuration and initialize empty model."""
     # Load configurations
@@ -317,7 +318,7 @@ def load_and_quantize_model(model_path: str):
 def apply_quantization_and_compile(model):
     """Apply quantization and torch.compile optimizations."""
     print("[QUANT] Converting to FP8 quantization...")
-    quantize_(model, float8_dynamic_activation_float8_weight())
+    # quantize_(model, float8_dynamic_activation_float8_weight())
     
     print("[QUANT] Converting to channels_last memory format...")
     if hasattr(model, 'language_model'):
@@ -364,9 +365,8 @@ def apply_quantization_and_compile(model):
     print(f"[CLEANUP] Memory after cleanup: {get_all_memory_stats()}")
     
     return model
-#endregion ===================================================================
 
-#region == Model Warmup ======================================================
+#%% Model Warmup
 def warmup_model(inferencer):
     """
     简化预热：启用dynamic=True后，只需预热一次即可支持所有尺寸
@@ -451,9 +451,8 @@ def warmup_model(inferencer):
         import traceback
         traceback.print_exc()
         print("[WARMUP] Model will compile during first user request\n")
-#endregion ===================================================================
 
-#region == Utility Functions =================================================
+#%% Utility Functions
 def set_seed(seed: int):
     """Set random seeds for reproducibility."""
     if seed > 0:
@@ -473,9 +472,8 @@ def load_example_image(image_path: str) -> Optional[Image.Image]:
     except Exception as e:
         print(f"Error loading example image: {e}")
         return None
-#endregion ===================================================================
 
-#region == Inference Functions ===============================================
+#%% Inference Functions
 def text_to_image(
     inferencer,
     prompt: str,
@@ -582,9 +580,8 @@ def edit_image(
     duration = time.time() - start_time
     
     return result["image"], result.get("text", ""), f"{duration:.2f} seconds"
-#endregion ===================================================================
 
-#region == Gradio Interface ==================================================
+#%% Gradio Interface
 def create_gradio_interface(inferencer):
     """Create and configure Gradio interface."""
     
@@ -777,9 +774,8 @@ def create_gradio_interface(inferencer):
 """)
     
     return demo
-#endregion ===================================================================
 
-
+#%% Main Execution
 parser = argparse.ArgumentParser(description="BAGEL Model Gradio Interface")
 parser.add_argument("--server_name", type=str, default="127.0.0.1")
 parser.add_argument("--server_port", type=int, default=7860)

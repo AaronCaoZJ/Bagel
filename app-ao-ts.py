@@ -33,7 +33,7 @@ from typing import Dict, Tuple, Optional, List
 import gradio as gr
 import numpy as np
 
-os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/home/zhijun/Code/Bagel/triton"
+# os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/home/zhijun/Code/Bagel/triton"
 os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"
 import torch
 import torch._dynamo
@@ -52,7 +52,7 @@ from torchao.quantization import (
 from accelerate import infer_auto_device_map, load_checkpoint_and_dispatch, init_empty_weights
 
 # Local imports
-from scripts.export_precision_report import export_precision_report
+# from scripts.export_precision_report import export_precision_report
 from data.data_utils import add_special_tokens, pil_img2rgb
 from data.transforms import ImageTransform
 from inferencer import InterleaveInferencer
@@ -77,7 +77,7 @@ DEFAULT_TEXT2IMG_PARAMS = {
     "cfg_text_scale": 4.0,
     "cfg_interval": 0.4,
     "timestep_shift": 3.0,
-    "num_timesteps": 50,
+    "num_timesteps": 41,
     "cfg_renorm_min": 0.0,
     "cfg_renorm_type": "global",
     "max_think_token_n": 1024,
@@ -90,7 +90,7 @@ DEFAULT_IMG2IMG_PARAMS = {
     "cfg_img_scale": 2.0,
     "cfg_interval": 0.0,
     "timestep_shift": 3.0,
-    "num_timesteps": 50,
+    "num_timesteps": 41,
     "cfg_renorm_min": 0.0,
     "cfg_renorm_type": "text_channel",
     "max_think_token_n": 1024,
@@ -124,6 +124,67 @@ SAME_DEVICE_MODULES = [
     'connector',
     'vit_pos_embed'
 ]
+
+
+#%% Utility Functions
+def set_seed(seed: int):
+    """Set random seeds for reproducibility."""
+    if seed > 0:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def load_example_image(image_path: str) -> Optional[Image.Image]:
+    """Load an example image, return None if failed."""
+    try:
+        return Image.open(image_path)
+    except Exception as e:
+        print(f"Error loading example image: {e}")
+        return None
+
+
+def reset_taylorseer_cache_simple(model, num_steps=41, taylor_fresh_threshold=3, taylor_first_enhance=10, taylor_max_order=6):
+    """重置 TaylorSeer 缓存（Layer 级别缓存，用于全层编译策略）
+    
+    Args:
+        model: Bagel 模型（包含 language_model）
+        num_steps: 总推理步数
+        taylor_fresh_threshold: 新鲜阈值（每隔几步刷新一次缓存）
+        taylor_first_enhance: 首次增强步数（前 N 步使用 'full' 路径建立缓存）
+        taylor_max_order: 最大泰勒阶数（Taylor 展开的最高次数）
+    """
+    from modeling.cache_utils.taylorseer import simple_cache_init
+    
+    if not (hasattr(model, 'language_model') and 
+            hasattr(model.language_model, 'model')):
+        return
+    
+    llm_model = model.language_model.model
+    
+    # simple_cache_init 需要访问 self.language_model.model.layers 获取 layer 数量
+    # 创建临时上下文对象提供这个访问路径
+    class TempContext:
+        def __init__(self, language_model):
+            self.language_model = language_model
+    
+    temp_ctx = TempContext(model.language_model)
+    cache_dic, current = simple_cache_init(
+        temp_ctx, 
+        num_steps=num_steps,
+        taylor_fresh_threshold=taylor_fresh_threshold,
+        taylor_first_enhance=taylor_first_enhance,
+        taylor_max_order=taylor_max_order
+    )
+    
+    # 只需在 Qwen2Model 级别分配 cache（全层编译不需要子模块访问）
+    llm_model.cache_dic = cache_dic
+    llm_model.current = current
+
 
 #%% Memory Statistics Functions
 def get_gpu_memory_stats_pynvml(device_id: int = 0) -> str:
@@ -275,7 +336,7 @@ def optimize_device_map(device_map):
     return device_map
 
 #%% Model Loading and Quantization
-def load_and_quantize_model(model_path: str):
+def load_model(model_path: str):
     """Load model configuration and initialize empty model."""
     # Load configurations
     llm_config = Qwen2Config.from_json_file(os.path.join(model_path, "llm_config.json"))
@@ -312,19 +373,34 @@ def load_and_quantize_model(model_path: str):
     tokenizer = Qwen2Tokenizer.from_pretrained(model_path)
     tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
     
+    # print("Converting VAE to bfloat16 on CUDA...")
+    # vae_model = vae_model.to(dtype=torch.bfloat16, device="cuda:0")
+    # print(f"VAE model device:{next(vae_model.parameters()).device},dtype:{next(vae_model.parameters()).dtype}")
+
     return model, vae_model, tokenizer, new_token_ids
 
 
-def apply_quantization_and_compile(model):
-    """Apply quantization and torch.compile optimizations."""
-    print("[QUANT] Converting to FP8 quantization...")
-    # quantize_(model, float8_dynamic_activation_float8_weight())
+def apply_quantization_and_compile(model, enable_taylorseer_compile=False):
+    """Apply quantization and torch.compile optimizations.
     
-    print("[QUANT] Converting to channels_last memory format...")
+    Args:
+        model: Model to quantize and compile
+        enable_taylorseer_compile: If True, SKIP layer compilation (TaylorSeer conflicts with torch.compile)
+    """
+    print("[🧩 QUANT] Converting to FP8 quantization...")
+    quantize_(model, float8_dynamic_activation_float8_weight())
+    
+    print("[🧩 QUANT] Converting to channels_last memory format...")
     if hasattr(model, 'language_model'):
         model.language_model = model.language_model.to(memory_format=torch.channels_last)
     
-    print("[QUANT] Configuring torch._dynamo...")
+    if enable_taylorseer_compile:
+        print("[🛠️ COMPILE] ⚠️  TaylorSeer mode: Using compilation (layers only). Control flow handled in Python.")
+        # print("[🛠️ COMPILE] ℹ️  Reason: TaylorSeer's dynamic control flow (full/Taylor switch) breaks compilation")
+        # print("[🛠️ COMPILE] ℹ️  Performance: FP8 quantization alone provides ~2x speedup")
+        # return model
+    
+    print("[🧩 QUANT] Configuring torch._dynamo...")
     torch._dynamo.config.capture_scalar_outputs = True
     torch._dynamo.config.suppress_errors = False
     
@@ -337,98 +413,214 @@ def apply_quantization_and_compile(model):
     os.environ['TORCH_CUDAGRAPHS_VERBOSE'] = '0'
     warnings.filterwarnings('ignore', message='.*cudagraphs.*')
     
-    # Compile model
+    # compile模式选择：
+    # - "max-autotune": 最激进优化，但可能与 accelerate hooks 冲突
+    # - "reduce-overhead": 平衡模式，减少 Python 开销
+    # - "default": 最安全模式
+    COMPILE_MODE = "default"
+    
     if hasattr(model, 'language_model'):
         devices_used = {param.device.index for name, param in model.language_model.named_parameters() 
                        if param.device.type == 'cuda'}
         
-        if len(devices_used) > 1:
-            print(f"[COMPILE] language_model spans {len(devices_used)} GPUs, compiling layers individually...")
-            for i, layer in enumerate(model.language_model.model.layers):
+        print(f"[🛠️ COMPILE] Compiling layers individually...")
+        print(f"[🛠️ COMPILE] Using mode='{COMPILE_MODE}'")
+        if enable_taylorseer_compile:
+            print(f"[🛠️ COMPILE] TaylorSeer enabled: Outer loop control flow is Python-native")
+        
+        compiled_count = 0
+        failed_count = 0
+        
+        for i, layer in enumerate(model.language_model.model.layers):
+            try:
                 model.language_model.model.layers[i] = torch.compile(
-                    layer, mode="default", fullgraph=True, dynamic=True
+                    layer,
+                    mode=COMPILE_MODE,
+                    fullgraph=False,  # 允许图分裂，兼容 MoE 和动态控制流
+                    dynamic=True,     # 支持动态形状
                 )
-            print("[COMPILE] ✅ All layers compiled (dynamic mode)")
+                compiled_count += 1
+            except Exception as e:
+                print(f"[🛠️ COMPILE] ⚠️ Layer {i} compilation failed: {e}")
+                failed_count += 1
+        
+        if failed_count > 0:
+            print(f"[🛠️ COMPILE] ⚠️ {failed_count} layers failed, {compiled_count} layers compiled")
         else:
-            print("[COMPILE] Compiling language_model as a whole (dynamic mode)...")
-            model.language_model = torch.compile(
-                model.language_model, mode="default", fullgraph=True, dynamic=True
-            )
-            print("[COMPILE] ✅ language_model compiled (supports dynamic shapes)")
+            print(f"[🛠️ COMPILE] ✅ All {compiled_count} layers compiled successfully")
     
     # 温和清理：只清理量化过程的临时数据，不影响编译后的计算图
     # torch.compile的计算图会持久化到磁盘缓存，empty_cache()不会删除它们
-    print("[CLEANUP] Clearing temporary tensors from quantization...")
+    print("[🛁 CLEANUP] Clearing temporary tensors from quantization...")
     gc.collect()  # 回收Python对象
     if torch.cuda.is_available():
         torch.cuda.empty_cache()  # 只清理未使用的显存碎片，不影响模型本身
-    print(f"[CLEANUP] Memory after cleanup: {get_all_memory_stats()}")
+    print(f"[🛁 CLEANUP] Memory after cleanup: {get_all_memory_stats()}")
     
     return model
 
 #%% Model Warmup
-def warmup_model(inferencer):
+def warmup_model(inferencer, enable_taylorseer_compile=False):
     """
     简化预热：启用dynamic=True后，只需预热一次即可支持所有尺寸
     Dynamic compilation will automatically adapt to any input size
-    """
-    print("\n" + "="*60)
-    print("[WARMUP] Starting simplified warmup (dynamic mode)...")
-    print("="*60)
     
+    Args:
+        inferencer: The model inferencer
+        enable_taylorseer_compile: If True, also warmup TaylorSeer compilation paths
+    """    
     total_start = time.time()
     
     try:
-        # 单次文生图预热
-        print(f"\n[WARMUP] Text-to-image warmup (10 steps, 1024x1024)...")
-        start = time.time()
-        with torch.no_grad():
-            _ = inferencer(
-                text="Warmup test",
-                image_shapes=(1024, 1024),
-                num_timesteps=10,
-                max_think_token_n=512,
-                think=False,
-                cfg_text_scale=4.0,
-                cfg_interval=[0.4, 1.0],
-                timestep_shift=3.0,
+        if not enable_taylorseer_compile:
+            # 单次文生图预热
+            print(f"\n[🔥 WARMUP] Text-to-image warmup (10 steps, 1024x1024)...")
+            start = time.time()
+            with torch.no_grad():
+                _ = inferencer(
+                    text="Gen Warmup",
+                    image_shapes=(1024, 1024),
+                    num_timesteps=10,
+                    max_think_token_n=512,
+                    think=False,
+                    cfg_text_scale=4.0,
+                    cfg_interval=[0.4, 1.0],
+                    timestep_shift=3.0,
+                )
+            print(f"  ✅ Done in {time.time() - start:.1f}s (supports all sizes now)")
+            
+            # 清理warmup产生的激活值和中间tensor（不会影响编译好的kernel）
+            # 编译的计算图已经持久化，这里只清理推理产生的临时数据
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print(f"  [🛁 CLEANUP] Memory after T2I warmup: {get_gpu_memory_stats_pytorch(0)}")
+            
+            # 单次图生图预热
+            print(f"\n[🔥 WARMUP] Image-to-image warmup (10 steps, 1024x768)...")
+            dummy_img = Image.new('RGB', (1024, 768), color='gray')
+            start = time.time()
+            with torch.no_grad():
+                _ = inferencer(
+                    image=dummy_img,
+                    text="Edit warmup",
+                    num_timesteps=10,
+                    max_think_token_n=1024,
+                    think=False,
+                    cfg_text_scale=4.0,
+                    cfg_img_scale=2.0,
+                    cfg_interval=[0.0, 1.0],
+                    timestep_shift=3.0,
+                    cfg_renorm_min=0.0,
+                    cfg_renorm_type="text_channel",
+                )
+            print(f"  ✅ Done in {time.time() - start:.1f}s (supports all sizes now)")
+            
+            # 清理warmup产生的激活值（编译好的kernel仍在缓存中）
+            del dummy_img
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print(f"  [🛁 CLEANUP] Memory after I2I warmup: {get_gpu_memory_stats_pytorch(0)}")
+        
+        else:
+            print(f"\n[🔥 WARMUP] TaylorSeer mode: warming up sub-module compilation...")
+            print(f"[🔥 WARMUP] Using fixed params: first_enhance=10, max_order=6, threshold=3")
+            
+            # Text-to-Image with TaylorSeer
+            print(f"[🔥 WARMUP]   - Text-to-Image path (41 steps, 1024x1024)...")
+            start = time.time()
+            with torch.no_grad():
+                _ = inferencer(
+                    text="TaylorSeer T2I warmup",
+                    image_shapes=(1024, 1024),
+                    num_timesteps=41,
+                    max_think_token_n=512,
+                    think=False,
+                    cfg_text_scale=4.0,
+                    cfg_interval=[0.4, 1.0],
+                    timestep_shift=3.0,
+                    enable_taylorseer=True,
+                    taylor_first_enhance=10,  # 使用固定参数
+                    taylor_max_order=6,
+                    taylor_fresh_threshold=3,
+                )
+            print(f"  ✅ Taylorseer T2I done in {time.time() - start:.1f}s")
+            
+            # 清理激活值
+            del _
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # ✅ **使用 simple_cache_init 重新初始化**
+            print(f"[🛁 CLEANUP]   - Reinitializing TaylorSeer cache (using simple_cache_init)...")
+            if hasattr(inferencer, 'model'):
+                model_to_clear = inferencer.model
+            else:
+                model_to_clear = model
+            
+            reset_taylorseer_cache_simple(
+                model_to_clear,
+                num_steps=41,
+                taylor_fresh_threshold=3,
+                taylor_first_enhance=10,
+                taylor_max_order=6
             )
-        print(f"  ✅ Done in {time.time() - start:.1f}s (supports all sizes now)")
-        
-        # 清理warmup产生的激活值和中间tensor（不会影响编译好的kernel）
-        # 编译的计算图已经持久化，这里只清理推理产生的临时数据
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        print(f"  [CLEANUP] Memory after T2I warmup: {get_gpu_memory_stats_pytorch(0)}")
-        
-        # 单次图生图预热
-        print(f"\n[WARMUP] Image-to-image warmup (10 steps, 1024x768)...")
-        dummy_img = Image.new('RGB', (1024, 768), color='gray')
-        start = time.time()
-        with torch.no_grad():
-            _ = inferencer(
-                image=dummy_img,
-                text="Edit warmup",
-                num_timesteps=10,
-                max_think_token_n=1024,
-                think=False,
-                cfg_text_scale=4.0,
-                cfg_img_scale=2.0,
-                cfg_interval=[0.0, 1.0],
-                timestep_shift=3.0,
-                cfg_renorm_min=0.0,
-                cfg_renorm_type="text_channel",
+            
+            # 强制同步并清理显存
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+            
+            print(f"[🛁 CLEANUP]   - TaylorSeer cache cleared between T2I and I2I")
+            
+            # Image-to-Image with TaylorSeer
+            print(f"[🔥 WARMUP]   - Image-to-Image path (41 steps, 1024x768)...")
+            dummy_img_ts = Image.new('RGB', (1024, 768), color='gray')
+            start = time.time()
+            with torch.no_grad():
+                _ = inferencer(
+                    image=dummy_img_ts,
+                    text="TaylorSeer I2I warmup",
+                    num_timesteps=41,
+                    max_think_token_n=1024,
+                    think=False,
+                    cfg_text_scale=4.0,
+                    cfg_img_scale=2.0,
+                    cfg_interval=[0.0, 1.0],
+                    timestep_shift=3.0,
+                    cfg_renorm_min=0.0,
+                    cfg_renorm_type="text_channel",
+                    enable_taylorseer=True,
+                    taylor_first_enhance=10,  # 使用固定参数
+                    taylor_max_order=6,
+                    taylor_fresh_threshold=3,
+                )
+            print(f"  ✅ Taylorseer I2I done in {time.time() - start:.1f}s")
+
+            # 清理warmup产生的激活值
+            del dummy_img_ts
+            del _
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # ✅ **最终清理：使用官方初始化**
+            print(f"[🛁 CLEANUP]   - Final TaylorSeer cache reset (using simple_cache_init)...")
+            reset_taylorseer_cache_simple(
+                model_to_clear,
+                num_steps=41,
+                taylor_fresh_threshold=3,
+                taylor_first_enhance=10,
+                taylor_max_order=6
             )
-        print(f"  ✅ Done in {time.time() - start:.1f}s (supports all sizes now)")
-        
-        # 清理warmup产生的激活值（编译好的kernel仍在缓存中）
-        del dummy_img
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        print(f"  [CLEANUP] Memory after I2I warmup: {get_gpu_memory_stats_pytorch(0)}")
-        
+            print(f"  [🛁 CLEANUP] Memory after TaylorSeer warmup: {get_gpu_memory_stats_pytorch(0)}")
+
+            print(f"  ✅ TaylorSeer warmup complete (both T2I and I2I paths compiled)")
+            print(f"  ℹ️  Compiled: attn + mlp sub-modules for both 'full' and 'Taylor' paths")
+            
+
         # 最终清理：只清理warmup的激活值，保留编译的计算图和kernel缓存
         # torch._inductor.config.fx_graph_cache=True 会把编译结果存在磁盘
         # empty_cache() 只释放未使用的显存，不会删除编译好的代码
@@ -441,37 +633,18 @@ def warmup_model(inferencer):
         
         total_time = time.time() - total_start
         print(f"\n{'='*60}")
-        print(f"[WARMUP] ✅ Complete in {total_time:.1f}s")
-        print(f"[WARMUP] ✅ Dynamic mode ready for any size")
+        print(f"[🔥 WARMUP] ✅ Complete in {total_time:.1f}s")
+        print(f"[🔥 WARMUP] ✅ Dynamic mode ready for any size")
+
         print(f"{'='*60}")
         print(f"\n[FINAL MEMORY] {get_all_memory_stats()}\n")
         
     except Exception as e:
-        print(f"\n[WARMUP] ⚠️ Warning: {e}")
+        print(f"\n[🔥 WARMUP] ⚠️ Warning: {e}")
         import traceback
         traceback.print_exc()
         print("[WARMUP] Model will compile during first user request\n")
 
-#%% Utility Functions
-def set_seed(seed: int):
-    """Set random seeds for reproducibility."""
-    if seed > 0:
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-
-def load_example_image(image_path: str) -> Optional[Image.Image]:
-    """Load an example image, return None if failed."""
-    try:
-        return Image.open(image_path)
-    except Exception as e:
-        print(f"Error loading example image: {e}")
-        return None
 
 #%% Inference Functions
 def text_to_image(
@@ -484,7 +657,16 @@ def text_to_image(
 ) -> Tuple[Image.Image, str, str]:
     """Generate image from text prompt."""
     set_seed(seed)
-    
+
+    if kwargs.get("enable_taylorseer", False):
+        reset_taylorseer_cache_simple(
+            inferencer.model,
+            num_steps=kwargs.get("num_timesteps", 41),
+            taylor_fresh_threshold=kwargs.get("taylor_fresh_threshold", 3),
+            taylor_first_enhance=kwargs.get("taylor_first_enhance", 10),
+            taylor_max_order=kwargs.get("taylor_max_order", 6),
+        )
+
     inference_params = {
         "text": prompt,
         "think": show_thinking,
@@ -495,9 +677,13 @@ def text_to_image(
         "cfg_text_scale": kwargs.get("cfg_text_scale", 4.0),
         "cfg_interval": [kwargs.get("cfg_interval", 0.4), 1.0],
         "timestep_shift": kwargs.get("timestep_shift", 3.0),
-        "num_timesteps": kwargs.get("num_timesteps", 50),
+        "num_timesteps": kwargs.get("num_timesteps", 41),
         "cfg_renorm_min": kwargs.get("cfg_renorm_min", 0.0),
         "cfg_renorm_type": kwargs.get("cfg_renorm_type", "global"),
+        "enable_taylorseer": kwargs.get("enable_taylorseer", False),
+        "taylor_first_enhance": kwargs.get("taylor_first_enhance", 10),
+        "taylor_max_order": kwargs.get("taylor_max_order", 6),
+        "taylor_fresh_threshold": kwargs.get("taylor_fresh_threshold", 3),
     }
     
     start_time = time.time()
@@ -558,6 +744,15 @@ def edit_image(
         image = Image.fromarray(image)
     
     image = pil_img2rgb(image)
+
+    if kwargs.get("enable_taylorseer", False):
+        reset_taylorseer_cache_simple(
+            inferencer.model,
+            num_steps=kwargs.get("num_timesteps", 41),
+            taylor_fresh_threshold=kwargs.get("taylor_fresh_threshold", 3),
+            taylor_first_enhance=kwargs.get("taylor_first_enhance", 10),
+            taylor_max_order=kwargs.get("taylor_max_order", 6),
+        )
     
     inference_params = {
         "image": image,
@@ -570,9 +765,13 @@ def edit_image(
         "cfg_img_scale": kwargs.get("cfg_img_scale", 2.0),
         "cfg_interval": [kwargs.get("cfg_interval", 0.0), 1.0],
         "timestep_shift": kwargs.get("timestep_shift", 3.0),
-        "num_timesteps": kwargs.get("num_timesteps", 50),
+        "num_timesteps": kwargs.get("num_timesteps", 41),
         "cfg_renorm_min": kwargs.get("cfg_renorm_min", 0.0),
         "cfg_renorm_type": kwargs.get("cfg_renorm_type", "text_channel"),
+        "enable_taylorseer": kwargs.get("enable_taylorseer", False),
+        "taylor_first_enhance": kwargs.get("taylor_first_enhance", 10),
+        "taylor_max_order": kwargs.get("taylor_max_order", 6),
+        "taylor_fresh_threshold": kwargs.get("taylor_fresh_threshold", 3),
     }
     
     start_time = time.time()
@@ -616,8 +815,24 @@ def create_gradio_interface(inferencer):
                     cfg_renorm_min = gr.Slider(0.0, 1.0, 0.0, step=0.1, label="CFG Renorm Min")
                 
                 with gr.Row():
-                    num_timesteps = gr.Slider(10, 100, 50, step=5, label="Timesteps")
+                    num_timesteps = gr.Slider(10, 100, 41, step=5, label="Timesteps")
                     timestep_shift = gr.Slider(1.0, 5.0, 3.0, step=0.5, label="Timestep Shift")
+                
+                with gr.Row():
+                    enable_taylorseer = gr.Checkbox(label="Enable TaylorSeer", value=True)
+                
+                taylor_params = gr.Group(visible=True)
+                with taylor_params:
+                    with gr.Row():
+                        taylor_first_enhance = gr.Slider(1, 20, 10, step=1, label="Taylor First Enhance")
+                        taylor_max_order = gr.Slider(1, 10, 6, step=1, label="Taylor Max Order")
+                        taylor_fresh_threshold = gr.Slider(1, 10, 3, step=1, label="Taylor Fresh Threshold")
+                
+                enable_taylorseer.change(
+                    lambda x: gr.update(visible=x),
+                    inputs=[enable_taylorseer],
+                    outputs=[taylor_params]
+                )
                 
                 thinking_params = gr.Group(visible=False)
                 with thinking_params:
@@ -641,6 +856,7 @@ def create_gradio_interface(inferencer):
                 params = dict(zip([
                     "prompt", "show_thinking", "cfg_text_scale", "cfg_interval",
                     "timestep_shift", "num_timesteps", "cfg_renorm_min", "cfg_renorm_type",
+                    "enable_taylorseer", "taylor_first_enhance", "taylor_max_order", "taylor_fresh_threshold",
                     "max_think_token_n", "do_sample", "text_temperature", "seed", "image_ratio"
                 ], args))
                 return text_to_image(inferencer, **params)
@@ -649,7 +865,9 @@ def create_gradio_interface(inferencer):
                 [gen_btn.click, txt_input.submit],
                 process_t2i,
                 inputs=[txt_input, show_thinking, cfg_text_scale, cfg_interval, timestep_shift,
-                       num_timesteps, cfg_renorm_min, cfg_renorm_type, max_think_token_n,
+                       num_timesteps, cfg_renorm_min, cfg_renorm_type, 
+                       enable_taylorseer, taylor_first_enhance, taylor_max_order, taylor_fresh_threshold,
+                       max_think_token_n,
                        do_sample, text_temperature, seed, image_ratio],
                 outputs=[img_output, thinking_output, generation_time]
             )
@@ -682,8 +900,24 @@ def create_gradio_interface(inferencer):
                     edit_cfg_renorm_min = gr.Slider(0.0, 1.0, 0.0, step=0.1, label="CFG Renorm Min")
                 
                 with gr.Row():
-                    edit_num_timesteps = gr.Slider(10, 100, 50, step=5, label="Timesteps")
+                    edit_num_timesteps = gr.Slider(10, 100, 41, step=5, label="Timesteps")
                     edit_timestep_shift = gr.Slider(1.0, 10.0, 3.0, step=0.5, label="Timestep Shift")
+                
+                with gr.Row():
+                    edit_enable_taylorseer = gr.Checkbox(label="Enable TaylorSeer", value=True)
+                
+                edit_taylor_params = gr.Group(visible=True)
+                with edit_taylor_params:
+                    with gr.Row():
+                        edit_taylor_first_enhance = gr.Slider(1, 20, 10, step=1, label="Taylor First Enhance")
+                        edit_taylor_max_order = gr.Slider(1, 10, 6, step=1, label="Taylor Max Order")
+                        edit_taylor_fresh_threshold = gr.Slider(1, 10, 3, step=1, label="Taylor Fresh Threshold")
+                
+                edit_enable_taylorseer.change(
+                    lambda x: gr.update(visible=x),
+                    inputs=[edit_enable_taylorseer],
+                    outputs=[edit_taylor_params]
+                )
                 
                 edit_thinking_params = gr.Group(visible=False)
                 with edit_thinking_params:
@@ -705,7 +939,9 @@ def create_gradio_interface(inferencer):
                 params = dict(zip([
                     "image", "prompt", "show_thinking", "cfg_text_scale", "cfg_img_scale",
                     "cfg_interval", "timestep_shift", "num_timesteps", "cfg_renorm_min",
-                    "cfg_renorm_type", "max_think_token_n", "do_sample", "text_temperature", "seed"
+                    "cfg_renorm_type", 
+                    "enable_taylorseer", "taylor_first_enhance", "taylor_max_order", "taylor_fresh_threshold",
+                    "max_think_token_n", "do_sample", "text_temperature", "seed"
                 ], args))
                 return edit_image(inferencer, **params)
             
@@ -715,6 +951,7 @@ def create_gradio_interface(inferencer):
                 inputs=[edit_img_input, edit_prompt, edit_show_thinking, edit_cfg_text_scale,
                        edit_cfg_img_scale, edit_cfg_interval, edit_timestep_shift,
                        edit_num_timesteps, edit_cfg_renorm_min, edit_cfg_renorm_type,
+                       edit_enable_taylorseer, edit_taylor_first_enhance, edit_taylor_max_order, edit_taylor_fresh_threshold,
                        edit_max_think_token_n, edit_do_sample, edit_text_temperature, edit_seed],
                 outputs=[edit_img_output, edit_thinking_output, edit_time]
             )
@@ -789,7 +1026,7 @@ print("="*60)
 
 # Load model
 print("\n[1/5] Loading model configuration...")
-model, vae_model, tokenizer, new_token_ids = load_and_quantize_model(args.model_path)
+model, vae_model, tokenizer, new_token_ids = load_model(args.model_path)
 
 # Create transforms
 vae_transform = ImageTransform(1024, 512, 16)
@@ -817,7 +1054,8 @@ model = load_checkpoint_and_dispatch(
 
 # Apply quantization and compilation
 print("\n[4/5] Applying quantization and compilation...")
-model = apply_quantization_and_compile(model)
+ENABLE_TAYLORSEER = True  # Set to True to enable TaylorSeer-compatible compilation
+model = apply_quantization_and_compile(model, enable_taylorseer_compile=ENABLE_TAYLORSEER)
 
 # Create inferencer
 inferencer = InterleaveInferencer(
@@ -831,7 +1069,7 @@ inferencer = InterleaveInferencer(
 
 # Warmup
 print("\n[5/5] Warming up model...")
-warmup_model(inferencer)
+warmup_model(inferencer, enable_taylorseer_compile=ENABLE_TAYLORSEER)
 
 # Create Gradio interface
 print("\n" + "="*60)

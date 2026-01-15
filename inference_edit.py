@@ -187,6 +187,20 @@ torch.backends.cudnn.benchmark = False
 #     speca_error_metric="relative_l2"
 # )
 
+inference_hyper=dict(
+    cfg_text_scale=4.0,
+    cfg_img_scale=2.0,
+    cfg_interval=[0.0, 1.0],
+    timestep_shift=3.0,
+    num_timesteps=41,
+    cfg_renorm_min=0.0,
+    cfg_renorm_type="text_channel",
+    enable_taylorseer=True,  # Enable TaylorSeer
+    taylor_first_enhance=10,  # TaylorSeer parameter
+    taylor_max_order=6,
+    taylor_fresh_threshold=3
+)
+
 # inference_hyper=dict(
 #     cfg_text_scale=4.0,
 #     cfg_img_scale=2.0,
@@ -195,21 +209,7 @@ torch.backends.cudnn.benchmark = False
 #     num_timesteps=50,
 #     cfg_renorm_min=0.0,
 #     cfg_renorm_type="text_channel",
-#     enable_taylorseer=True,  # Enable TaylorSeer
-#     taylor_first_enhance=6,  # TaylorSeer parameter
-#     taylor_max_order=6,
-#     taylor_fresh_threshold=3
 # )
-
-inference_hyper=dict(
-    cfg_text_scale=4.0,
-    cfg_img_scale=2.0,
-    cfg_interval=[0.0, 1.0],
-    timestep_shift=3.0,
-    num_timesteps=50,
-    cfg_renorm_min=0.0,
-    cfg_renorm_type="text_channel",
-)
 # %%
 # ...existing code...
 # image = Image.open('/root/Miko_share/Bagel/test_images/__castorice_honkai_and_1_more_drawn_by_houkisei__c767800bb2e5210319e753aaebc0855c.jpg')

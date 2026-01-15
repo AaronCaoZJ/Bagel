@@ -188,6 +188,21 @@ torch.backends.cudnn.benchmark = False
 #     image_shapes=(1024, 1024),
 # )
 
+inference_hyper=dict(
+    cfg_text_scale=4.0,
+    cfg_img_scale=1.0,
+    cfg_interval=[0.4, 1.0],
+    timestep_shift=3.0,
+    num_timesteps=41,
+    cfg_renorm_min=0.0,
+    cfg_renorm_type="global",
+    enable_taylorseer=True,  # Enable TaylorSeer
+    taylor_first_enhance=10,  # TaylorSeer parameter
+    taylor_max_order=6,
+    taylor_fresh_threshold=3,
+    image_shapes=(1024, 1024)
+)
+
 # inference_hyper=dict(
 #     cfg_text_scale=4.0,
 #     cfg_img_scale=1.0,
@@ -195,22 +210,8 @@ torch.backends.cudnn.benchmark = False
 #     timestep_shift=3.0,
 #     num_timesteps=50,
 #     cfg_renorm_min=0.0,
-#     cfg_renorm_type="global",
-#     enable_taylorseer=True,  # Enable TaylorSeer
-#     taylor_first_enhance=5,  # TaylorSeer parameter
-#     taylor_max_order=6,
-#     taylor_fresh_threshold=4
+#     cfg_renorm_type="global"
 # )
-
-inference_hyper=dict(
-    cfg_text_scale=4.0,
-    cfg_img_scale=1.0,
-    cfg_interval=[0.4, 1.0],
-    timestep_shift=3.0,
-    num_timesteps=50,
-    cfg_renorm_min=0.0,
-    cfg_renorm_type="global"
-)
 # %%
 # ...existing code...
 prompt = "A female cosplayer portraying an ethereal fairy or elf, wearing a flowing dress made of delicate fabrics in soft, mystical colors like emerald green and silver. She has pointed ears, a gentle, enchanting expression, and her outfit is adorned with sparkling jewels and intricate patterns. The background is a magical forest with glowing plants, mystical creatures, and a serene atmosphere."

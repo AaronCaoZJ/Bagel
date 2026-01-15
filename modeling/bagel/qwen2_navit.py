@@ -509,6 +509,8 @@ class PackedAttentionMoT(Qwen2Attention):
         mode="und",
         packed_vae_token_indexes=None,
         packed_text_indexes=None,
+        past_key_state: Optional[torch.Tensor] = None,
+        past_value_state: Optional[torch.Tensor] = None,
     ):
         if mode == 'und':
             packed_query_states = self.q_proj(packed_query_sequence).view(-1, self.num_heads, self.head_dim)
@@ -555,7 +557,21 @@ class PackedAttentionMoT(Qwen2Attention):
         packed_key_states = packed_key_states.to(torch.bfloat16)
         packed_value_states = packed_value_states.to(torch.bfloat16)
 
-        if past_key_values is not None and past_key_values.key_cache[self.layer_idx] is not None:
+        # Logic for decoupled tensor inputs (preferred for compilation)
+        if past_key_state is not None:
+            past_key_states = past_key_state
+            past_value_states = past_value_state
+
+            seqlens = sum(query_lens) + sum(key_values_lens)
+            merged_key_states = past_key_states.new_zeros(size=[seqlens, self.num_key_value_heads, self.head_dim])
+            merged_value_states = past_key_states.new_zeros(size=[seqlens, self.num_key_value_heads, self.head_dim])
+            merged_key_states[packed_query_indexes] = packed_key_states
+            merged_key_states[packed_key_value_indexes] = past_key_states
+            merged_value_states[packed_query_indexes] = packed_value_states
+            merged_value_states[packed_key_value_indexes] = past_value_states
+            key_values_lens = key_values_lens + query_lens
+        # Legacy object-based logic
+        elif past_key_values is not None and past_key_values.key_cache[self.layer_idx] is not None:
             past_key_states = past_key_values.key_cache[self.layer_idx]
             past_value_states = past_key_values.value_cache[self.layer_idx]
 
@@ -592,11 +608,15 @@ class PackedAttentionMoT(Qwen2Attention):
             packed_attn_output[packed_text_indexes] = self.o_proj(packed_attn_output[packed_text_indexes])
             packed_attn_output[packed_vae_token_indexes] = self.o_proj_moe_gen(packed_attn_output[packed_vae_token_indexes])
 
-        if update_past_key_values:
-            past_key_values.key_cache[self.layer_idx] = merged_key_states
-            past_key_values.value_cache[self.layer_idx] = merged_value_states
-
-        return packed_attn_output, past_key_values
+        if past_key_state is not None or past_key_values is None:
+             # In decoupled mode (or if explicit object is missing), return tensors
+             return packed_attn_output, (merged_key_states, merged_value_states)
+        else:
+             # Legacy mode: side-effect update
+             if update_past_key_values:
+                 past_key_values.key_cache[self.layer_idx] = merged_key_states
+                 past_key_values.value_cache[self.layer_idx] = merged_value_states
+             return packed_attn_output, past_key_values
 
 
 class Qwen2DecoderLayer(nn.Module):
@@ -767,136 +787,69 @@ class Qwen2MoTDecoderLayer(nn.Module):
         mode="und",
         packed_vae_token_indexes=None,
         packed_text_indexes=None,
+        past_key_state: Optional[torch.Tensor] = None,
+        past_value_state: Optional[torch.Tensor] = None,
     ) -> BaseNavitOutputWithPast:
+
+        residual = packed_query_sequence
+        if mode == "und":
+            packed_query_sequence = self.input_layernorm(packed_query_sequence)
+        elif mode == "gen":
+            packed_query_sequence_ = torch.zeros_like(packed_query_sequence)
+            packed_query_sequence_[packed_text_indexes] = self.input_layernorm(packed_query_sequence[packed_text_indexes])
+            packed_query_sequence_[packed_vae_token_indexes] = self.input_layernorm_moe_gen(packed_query_sequence[packed_vae_token_indexes])
+            packed_query_sequence = packed_query_sequence_
+
+        # Self Attention
+        # Updated to handle decoupled tensor inputs if provided
+        attn_outputs = self.self_attn(
+            packed_query_sequence=packed_query_sequence,
+            query_lens=query_lens,
+            packed_query_position_embeddings=packed_query_position_embeddings,
+            packed_query_indexes=packed_query_indexes,
+            past_key_values=past_key_values,
+            key_values_lens=key_values_lens,
+            packed_key_value_indexes=packed_key_value_indexes,
+            update_past_key_values=update_past_key_values,
+            is_causal=is_causal,
+            mode=mode,
+            packed_vae_token_indexes=packed_vae_token_indexes,
+            packed_text_indexes=packed_text_indexes,
+            past_key_state=past_key_state,
+            past_value_state=past_value_state,
+        )
         
-        current = getattr(self, 'current', None)
-        check_layer = bool(current and current.get('layer', -1) == 27)
-        # check_layer = (self.current['layer'] == 27)
-        full_packed_query_sequence = packed_query_sequence.clone() if check_layer else None
-                
-        enable_taylorseer = getattr(self, 'enable_taylorseer', False)
-        enable_speca = getattr(self, 'enable_speca', False)
+        # Check return signature
+        new_key_state, new_value_state = None, None
+        if past_key_state is not None:
+             packed_query_sequence, (new_key_state, new_value_state) = attn_outputs
+        else:
+             packed_query_sequence, past_key_values = attn_outputs
 
-        if (enable_taylorseer or enable_speca) and self.current['type'] == 'full':
-            self.current['module'] = 'total'
-            taylor_cache_init(cache_dic=self.cache_dic, current=self.current)
+        packed_query_sequence = residual + packed_query_sequence
 
-        if not (enable_taylorseer or enable_speca) or \
-            ((enable_taylorseer or enable_speca) and self.current['type'] == 'full'):
-            residual = packed_query_sequence
-            if mode == "und":
-                packed_query_sequence = self.input_layernorm(packed_query_sequence)
-            elif mode == "gen":
-                packed_query_sequence_ = torch.zeros_like(packed_query_sequence)
-                packed_query_sequence_[packed_text_indexes] = self.input_layernorm(packed_query_sequence[packed_text_indexes])
-                packed_query_sequence_[packed_vae_token_indexes] = self.input_layernorm_moe_gen(packed_query_sequence[packed_vae_token_indexes])
-                packed_query_sequence = packed_query_sequence_
+        # Fully Connected
+        residual = packed_query_sequence
+        if mode == "und":
+            packed_query_sequence = self.post_attention_layernorm(packed_query_sequence)
+            packed_query_sequence = self.mlp(packed_query_sequence)
+        elif mode == "gen":
+            packed_text_query_sequence = packed_query_sequence[packed_text_indexes]
+            packed_vae_query_sequence = packed_query_sequence[packed_vae_token_indexes]
+            packed_text_query_sequence = self.post_attention_layernorm(packed_text_query_sequence).to(torch.bfloat16)
+            packed_vae_query_sequence = self.post_attention_layernorm_moe_gen(packed_vae_query_sequence).to(torch.bfloat16)
 
-            # Self Attention
-            packed_query_sequence, past_key_values = self.self_attn(
-                packed_query_sequence=packed_query_sequence,
-                query_lens=query_lens,
-                packed_query_position_embeddings=packed_query_position_embeddings,
-                packed_query_indexes=packed_query_indexes,
-                past_key_values=past_key_values,
-                key_values_lens=key_values_lens,
-                packed_key_value_indexes=packed_key_value_indexes,
-                update_past_key_values=update_past_key_values,
-                is_causal=is_causal,
-                mode=mode,
-                packed_vae_token_indexes=packed_vae_token_indexes,
-                packed_text_indexes=packed_text_indexes,
-            )
-            packed_query_sequence = residual + packed_query_sequence
+            packed_query_sequence_ = torch.zeros_like(packed_query_sequence).to(torch.bfloat16)
+            packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence)
+            packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence)
+            packed_query_sequence = packed_query_sequence_
 
-            # Fully Connected
-            residual = packed_query_sequence
-            if mode == "und":
-                packed_query_sequence = self.post_attention_layernorm(packed_query_sequence)
-                packed_query_sequence = self.mlp(packed_query_sequence)
-            elif mode == "gen":
-                packed_text_query_sequence = packed_query_sequence[packed_text_indexes]
-                packed_vae_query_sequence = packed_query_sequence[packed_vae_token_indexes]
-                packed_text_query_sequence = self.post_attention_layernorm(packed_text_query_sequence).to(torch.bfloat16)
-                packed_vae_query_sequence = self.post_attention_layernorm_moe_gen(packed_vae_query_sequence).to(torch.bfloat16)
+        packed_query_sequence = residual + packed_query_sequence
 
-                packed_query_sequence_ = torch.zeros_like(packed_query_sequence).to(torch.bfloat16)
-                packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence)
-                packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence)
-                packed_query_sequence = packed_query_sequence_
-
-            packed_query_sequence = residual + packed_query_sequence            
-
-        if enable_taylorseer:
-            if self.current['type'] == 'full':
-                derivative_approximation(cache_dic=self.cache_dic, current=self.current, feature=packed_query_sequence)
-            elif self.current['type'] == 'Taylor':
-                self.current['module'] = 'total'
-                packed_query_sequence = taylor_formula(cache_dic=self.cache_dic, current=self.current)
-
-                if enable_speca:
-                    if check_layer and self.cache_dic['check']:
-                        residual = full_packed_query_sequence
-                        if mode == "und":
-                            full_packed_query_sequence = self.input_layernorm(full_packed_query_sequence)
-                        elif mode == "gen":
-                            full_packed_query_sequence_ = torch.zeros_like(full_packed_query_sequence)
-                            full_packed_query_sequence_[packed_text_indexes] = self.input_layernorm(full_packed_query_sequence[packed_text_indexes])
-                            full_packed_query_sequence_[packed_vae_token_indexes] = self.input_layernorm_moe_gen(full_packed_query_sequence[packed_vae_token_indexes])
-                            full_packed_query_sequence = full_packed_query_sequence_
-
-                        # Self Attention
-                        full_packed_query_sequence, past_key_values = self.self_attn(
-                            packed_query_sequence=full_packed_query_sequence,
-                            query_lens=query_lens,
-                            packed_query_position_embeddings=packed_query_position_embeddings,
-                            packed_query_indexes=packed_query_indexes,
-                            past_key_values=past_key_values,
-                            key_values_lens=key_values_lens,
-                            packed_key_value_indexes=packed_key_value_indexes,
-                            update_past_key_values=update_past_key_values,
-                            is_causal=is_causal,
-                            mode=mode,
-                            packed_vae_token_indexes=packed_vae_token_indexes,
-                            packed_text_indexes=packed_text_indexes,
-                        )
-                        full_packed_query_sequence = residual + full_packed_query_sequence
-
-                        # Fully Connected
-                        residual = full_packed_query_sequence
-                        if mode == "und":
-                            full_packed_query_sequence = self.post_attention_layernorm(full_packed_query_sequence)
-                            full_packed_query_sequence = self.mlp(full_packed_query_sequence)
-                        elif mode == "gen":
-                            packed_text_query_sequence = full_packed_query_sequence[packed_text_indexes]
-                            packed_vae_query_sequence = full_packed_query_sequence[packed_vae_token_indexes]
-                            packed_text_query_sequence = self.post_attention_layernorm(packed_text_query_sequence).to(torch.bfloat16)
-                            packed_vae_query_sequence = self.post_attention_layernorm_moe_gen(packed_vae_query_sequence).to(torch.bfloat16)
-
-                            full_packed_query_sequence_ = torch.zeros_like(full_packed_query_sequence).to(torch.bfloat16)
-                            full_packed_query_sequence_[packed_text_indexes] = self.mlp(packed_text_query_sequence)
-                            full_packed_query_sequence_[packed_vae_token_indexes] = self.mlp_moe_gen(packed_vae_query_sequence)
-                            full_packed_query_sequence = full_packed_query_sequence_
-
-                        full_packed_query_sequence = residual + full_packed_query_sequence
-
-                        error_calculator = ErrorCalculator(eps=1e-10)
-                        if self.cache_dic['error_metric'] == 'all':
-                            all_errors = error_calculator.all(packed_query_sequence, full_packed_query_sequence)
-                            self.current['last_layer_error'] = all_errors['relative_l1']
-                        else:
-                            if self.cache_dic['error_metric'] == 'l1':
-                                error = error_calculator.l1(packed_query_sequence, full_packed_query_sequence)
-                            elif self.cache_dic['error_metric'] == 'l2':
-                                error = error_calculator.l2(packed_query_sequence, full_packed_query_sequence)
-                            elif self.cache_dic['error_metric'] == 'relative_l1':
-                                error = error_calculator.relative_l1(packed_query_sequence, full_packed_query_sequence)
-                            elif self.cache_dic['error_metric'] == 'relative_l2':
-                                error = error_calculator.relative_l2(packed_query_sequence, full_packed_query_sequence)
-                            elif self.cache_dic['error_metric'] == 'cosine_similarity':
-                                error = error_calculator.cosine_similarity(packed_query_sequence, full_packed_query_sequence)
-
-                            self.current['last_layer_error'] = error
+        if past_key_state is not None:
+            return packed_query_sequence, (new_key_state, new_value_state)
+        else:
+            return packed_query_sequence, past_key_values
 
         return packed_query_sequence, past_key_values
 
@@ -1139,18 +1092,109 @@ class Qwen2Model(Qwen2PreTrainedModel):
                 decoder_layer.enable_taylorseer = enable_taylorseer
                 decoder_layer.enable_speca = enable_speca
                 self.current['layer'] = layer_idx
-            packed_query_sequence, past_key_values = decoder_layer(
-                packed_query_sequence=packed_query_sequence,
-                query_lens=query_lens,
-                packed_query_position_embeddings=packed_query_position_embeddings,
-                packed_query_indexes=packed_query_indexes,
-                past_key_values=past_key_values,
-                key_values_lens=key_values_lens,
-                packed_key_value_indexes=packed_key_value_indexes,
-                update_past_key_values=update_past_key_values,
-                is_causal=is_causal,
-                **extra_inputs,
-            )
+
+            check_layer = False
+            if enable_speca:
+                check_layer = bool(self.current and self.current.get('layer', -1) == 27)
+
+            # Decision: Run Full Layer or Skip (Taylor)?
+            
+            # Prepare decoupled cache tensors for Dynamo compatibility
+            past_key_state = None
+            past_value_state = None
+            is_mot_layer = hasattr(decoder_layer, 'self_attn') and isinstance(decoder_layer.self_attn, PackedAttentionMoT)
+            
+            # Only use decoupled mode if layer supports it (Qwen2MoTDecoderLayer) AND cache exists
+            if is_mot_layer and past_key_values is not None:
+                # Extract tensors to break Object dependency in the compiled graph
+                past_key_state = past_key_values.key_cache[layer_idx]
+                past_value_state = past_key_values.value_cache[layer_idx]
+                
+                # If cache is not initialized (first step), we still want to pass None explicitly to avoid mix-up
+                # But our modified layer logic handles None -> New Tensor.
+            
+            should_run_layer = True
+            full_packed_query_sequence_for_check = None
+
+            # Taylor / Speca Logic
+            if (enable_taylorseer or enable_speca) and self.current['type'] == 'full':
+                self.current['module'] = 'total'
+                taylor_cache_init(cache_dic=self.cache_dic, current=self.current)
+            elif enable_taylorseer and not enable_speca:
+                if self.current['type'] == 'Taylor':
+                    should_run_layer = False
+            elif enable_speca:
+                 if self.current['type'] != 'full':
+                     if check_layer and self.cache_dic.get('check', False):
+                         should_run_layer = True
+                     else:
+                         should_run_layer = False
+
+            # Run Layer
+            if should_run_layer:
+                # If using decoupled mode, pass Tensors and disable internal object access by passing None for object
+                layer_past_kv_arg = None if (is_mot_layer and past_key_values is not None) else past_key_values
+                
+                outputs = decoder_layer(
+                    packed_query_sequence=packed_query_sequence,
+                    query_lens=query_lens,
+                    packed_query_position_embeddings=packed_query_position_embeddings,
+                    packed_query_indexes=packed_query_indexes,
+                    past_key_values=layer_past_kv_arg,
+                    key_values_lens=key_values_lens,
+                    packed_key_value_indexes=packed_key_value_indexes,
+                    update_past_key_values=True, # Still true, but layer won't update object if object is None
+                    is_causal=is_causal,
+                    past_key_state=past_key_state,
+                    past_value_state=past_value_state,
+                    **extra_inputs,
+                )
+                
+                if is_mot_layer and past_key_values is not None:
+                    # Retrieve new tensors and manually update cache object in Python
+                    packed_query_sequence, (new_key, new_value) = outputs
+                    if update_past_key_values:
+                        past_key_values.key_cache[layer_idx] = new_key
+                        past_key_values.value_cache[layer_idx] = new_value
+                else:
+                    packed_query_sequence, past_key_values = outputs
+                
+                if enable_speca and self.current['type'] != 'full':
+                    full_packed_query_sequence_for_check = packed_query_sequence
+            
+            # Post-layer Logic (Training cache or Applying Approximation)
+            if enable_taylorseer or enable_speca:
+                if self.current['type'] == 'full':
+                    self.current['module'] = 'total'
+                    derivative_approximation(cache_dic=self.cache_dic, current=self.current, feature=packed_query_sequence)
+                
+                elif (enable_taylorseer and not enable_speca) or enable_speca: 
+                    # type == 'Taylor' or Speca equivalent
+                    self.current['module'] = 'total'
+                    taylor_output = taylor_formula(cache_dic=self.cache_dic, current=self.current)
+                    
+                    if enable_speca and check_layer and self.cache_dic.get('check', False):
+                         # verification logic
+                         error_calculator = ErrorCalculator(eps=1e-10)
+                         full_out = full_packed_query_sequence_for_check
+                         if self.cache_dic['error_metric'] == 'all':
+                            all_errors = error_calculator.all(taylor_output, full_out)
+                            self.current['last_layer_error'] = all_errors['relative_l1']
+                         else:
+                            if self.cache_dic['error_metric'] == 'l1':
+                                error = error_calculator.l1(taylor_output, full_out)
+                            elif self.cache_dic['error_metric'] == 'l2':
+                                error = error_calculator.l2(taylor_output, full_out)
+                            elif self.cache_dic['error_metric'] == 'relative_l1':
+                                error = error_calculator.relative_l1(taylor_output, full_out)
+                            elif self.cache_dic['error_metric'] == 'relative_l2':
+                                error = error_calculator.relative_l2(taylor_output, full_out)
+                            elif self.cache_dic['error_metric'] == 'cosine_similarity':
+                                error = error_calculator.cosine_similarity(taylor_output, full_out)
+                            self.current['last_layer_error'] = error
+                    
+                    # Regardless of whether we ran layer for check, the OUTPUT of this block should be taylor approx
+                    packed_query_sequence = taylor_output
 
         if self.use_moe:
             if mode == "und":

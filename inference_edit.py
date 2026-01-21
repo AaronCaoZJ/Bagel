@@ -38,7 +38,7 @@ from safetensors.torch import load_file
 # ## Model Initialization
 
 # %%
-model_path = "/root/Miko_share/Kokoro/models/BAGEL-7B-MoT/"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
+# model_path = "/root/Miko_share/Kokoro/models/BAGEL-7B-MoT/"  # Download from https://huggingface.co/ByteDance-Seed/BAGEL-7B-MoT
 model_path = "/home/zhijun/Code/Bagel/models/BAGEL-7B-MoT/"
 
 # LLM config preparing
@@ -54,6 +54,16 @@ vit_config.num_hidden_layers = vit_config.num_hidden_layers - 1
 
 # VAE loading
 vae_model, vae_config = load_ae(local_path=os.path.join(model_path, "ae.safetensors"))
+
+vae_model = vae_model.to("cuda:0", dtype=torch.bfloat16).eval()
+
+_original_vae_encode = vae_model.encode
+def _safe_vae_encode(x):
+    device = next(vae_model.parameters()).device
+    if x.device != device:
+        x = x.to(device)
+    return _original_vae_encode(x)
+vae_model.encode = _safe_vae_encode
 
 # Bagel config preparing
 config = BagelConfig(
@@ -213,8 +223,8 @@ inference_hyper=dict(
 # %%
 # ...existing code...
 # image = Image.open('/root/Miko_share/Bagel/test_images/__castorice_honkai_and_1_more_drawn_by_houkisei__c767800bb2e5210319e753aaebc0855c.jpg')
-image = Image.open('/home/zhijun/Code/Bagel/test_images/wakaba_mutsumi.jpg')
-prompt = '将人物手中的吉他替换为小提琴.'
+image = Image.open('/test_images/20251222-113154.jpg')
+prompt = '人物在沙滩上玩水，浪花打湿了裙摆.'
 
 print(prompt)
 # Save generated image to outputs/ with inference time in filename
@@ -271,8 +281,8 @@ else:
     except Exception as e:
         raise RuntimeError(f"Cannot convert image to PIL: {e}")
 
-out_dir = Path("/home/zhijun/Code/Bagel/outputs")
+out_dir = Path("outputs")
 out_dir.mkdir(parents=True, exist_ok=True)
-out_path = out_dir / f"test_{inference_duration:.2f}.png"
+out_path = out_dir / f"edit_{inference_duration:.2f}.png"
 pil_img.save(out_path)
 print(f"Saved image to: {out_path}")

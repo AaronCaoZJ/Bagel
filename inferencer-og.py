@@ -3,7 +3,6 @@
 
 from copy import deepcopy
 from typing import List, Dict, Optional, Union, Any
-import time
 
 from PIL import Image
 import torch
@@ -273,13 +272,7 @@ class InterleaveInferencer:
         latent = latent.reshape(1, h, w, self.model.latent_patch_size, self.model.latent_patch_size, self.model.latent_channel)
         latent = torch.einsum("nhwpqc->nchpwq", latent)
         latent = latent.reshape(1, self.model.latent_channel, h * self.model.latent_patch_size, w * self.model.latent_patch_size)
-        
-        vae_param = next(self.vae_model.parameters())
-        latent = latent.to(device=vae_param.device, dtype=vae_param.dtype)
-
-        t_vae = time.time()
         image = self.vae_model.decode(latent)
-        print(f"VAE Decode took: {time.time() - t_vae:.2f}s")
         image = (image * 0.5 + 0.5).clamp(0, 1)[0].permute(1, 2, 0) * 255
         image = Image.fromarray((image).to(torch.uint8).cpu().numpy())
 
@@ -349,9 +342,7 @@ class InterleaveInferencer:
 
                 elif isinstance(input_term, Image.Image):
                     input_term = self.vae_transform.resize_transform(pil_img2rgb(input_term))
-                    t0 = time.time()
                     gen_context = self.update_context_image(input_term, gen_context, vae=not understanding_output)
-                    print(f"VAE Encode / Update Context Image took: {time.time() - t0:.2f}s")
 
                     image_shapes = input_term.size[::-1]
                     cfg_text_context = deepcopy(gen_context)
@@ -369,7 +360,6 @@ class InterleaveInferencer:
                     gen_context = self.update_context_text(gen_text, gen_context)
                     output_list.append(gen_text)
 
-                t0 = time.time()
                 img = self.gen_image(
                     image_shapes, 
                     gen_context, 
@@ -386,7 +376,6 @@ class InterleaveInferencer:
                     enable_taylorseer=enable_taylorseer,
                     **kargs,
                 )
-                print(f"gen_image (diff + decode) took: {time.time() - t0:.2f}s")
 
                 output_list.append(img)
 

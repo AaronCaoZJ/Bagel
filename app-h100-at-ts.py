@@ -1,3 +1,4 @@
+#%% OK for w or w/o fp8 + compile + taylorseer
 #%% Imports
 import time
 import psutil
@@ -173,14 +174,14 @@ def get_all_memory_stats() -> str:
 #%% Model Loading and Quantization
 def load_model(model_path: str):
     """
-    Optimized loading: Initialize directly on GPU with bfloat16 and load weights directly to VRAM.
+    Optimized loading: Initialize on Meta device -> Cast to BF16 (Meta) -> Materialize on GPU.
     """
     import torch
     from safetensors.torch import load_file
     
     print(f"Loading model from {model_path}...")
 
-    # 1. 加载配置 (保持不变)
+    # 1. 加载配置
     llm_config = Qwen2Config.from_json_file(os.path.join(model_path, "llm_config.json"))
     llm_config.qk_norm = True
     llm_config.tie_word_embeddings = False
@@ -209,26 +210,27 @@ def load_model(model_path: str):
     tokenizer, new_token_ids, _ = add_special_tokens(tokenizer)
 
     # =========================================================
-    # ⚡️ 优化开始：直接在 GPU 上以 BF16 初始化
+    # ⚡️ 优化核心：Meta Device + Manual BF16 Cast + to_empty
     # =========================================================
-    print("🚀 Initializing model directly on GPU (bfloat16)...")
+    print("🚀 Initializing model on Meta device (zero memory)...")
     
-    # 设置默认类型为 bf16，避免 float32 带来的双倍显存开销和转换时间
-    original_dtype = torch.get_default_dtype()
-    torch.set_default_dtype(torch.bfloat16)
+    with torch.device("meta"):
+        language_model = Qwen2ForCausalLM(llm_config)
+        vit_model = SiglipVisionModel(vit_config)
+        model = Bagel(language_model, vit_model, config)
+
+    print("🚀 Materializing model directly to GPU VRAM (bfloat16)...")
     
-    try:
-        # 使用 device context，确保所有层直接在 GPU 分配
-        with torch.device("cuda:0"):
-            language_model = Qwen2ForCausalLM(llm_config)
-            vit_model = SiglipVisionModel(vit_config)
-            model = Bagel(language_model, vit_model, config)
-            
-            # 这个操作现在直接在 GPU 上进行，速度更快
-            model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config, meta=False)
-    finally:
-        # 恢复默认设置，以免影响其他代码
-        torch.set_default_dtype(original_dtype)
+    # 1. 先将 Meta 模型转换为 BF16。
+    #    这一步非常快，因为它只修改元数据（shape/stride/dtype），不涉及实际数据搬运。
+    model = model.to(dtype=torch.bfloat16)
+    
+    # 2. 调用 to_empty 分配显存。
+    #    此时 PyTorch 看到模型已经是 BF16，就会直接分配 BF16 的显存。
+    model.to_empty(device="cuda:0")
+
+    # 3. 执行结构修改 (必须在 to_empty 之后)
+    model.vit_model.vision_model.embeddings.convert_conv2d_to_linear(vit_config, meta=False)
 
     # =========================================================
     # ⚡️ 优化加载：Direct Storage -> GPU VRAM
@@ -236,10 +238,10 @@ def load_model(model_path: str):
     print("🚀 Loading weights directly to GPU VRAM...")
     checkpoint_path = os.path.join(model_path, "ema.safetensors")
     
-    # 关键修改：device="cuda:0"。这会利用 PCIe 直接传输，跳过 CPU 内存拷贝
+    # 利用 PCIe 直接传输
     state_dict = load_file(checkpoint_path, device="cuda:0")
     
-    # 加载权重 (此时 source 和 target 都在 GPU 上，瞬间完成)
+    # 加载权重
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     
     if missing_keys:
@@ -247,13 +249,22 @@ def load_model(model_path: str):
     if unexpected_keys:
         print(f"Unexpected keys: {len(unexpected_keys)}")
     
-    # 处理 VAE (同样转到 GPU)
+    # 处理 VAE (手动转到 GPU)
     print("Moving VAE to GPU...")
     vae_model = vae_model.to(dtype=torch.bfloat16, device="cuda:0")
     
+    # VAE Safe Encode Patch (保持原样)
+    _original_vae_encode = vae_model.encode
+    def _safe_vae_encode(x):
+        device = next(vae_model.parameters()).device
+        if x.device != device:
+            x = x.to(device)
+        return _original_vae_encode(x)
+    vae_model.encode = _safe_vae_encode
+    
     print(f"✅ Model loaded successfully on {model.device}")
     
-    # 清理一下加载过程中的临时显存碎片
+    # 清理
     torch.cuda.empty_cache()
 
     return model, vae_model, tokenizer, new_token_ids
@@ -304,31 +315,7 @@ def compile_bagel_single_gpu(model, mode="default", enable_taylorseer_compile=Fa
         print(f"  ✓ FX Graph Cache: 已启用", flush=True)
         print(f"  ✓ 编译日志: 已启用（查看 stderr）", flush=True)
     
-    # ============================================================
-    # 第1步：编译核心 Language Model（最重要）
-    # ============================================================
     try:
-    #     if verbose:
-    #         print("\n[🧠 LANGUAGE MODEL] 尝试整体编译...", flush=True)
-    #         print("  ⏳ 注意：torch.compile() 是延迟编译，实际编译将在首次推理时发生", flush=True)
-    #         print("  ⏳ 首次推理时会看到大量 dynamo 日志输出（30-60秒）", flush=True)
-        
-    #     model.language_model = torch.compile(
-    #         model.language_model,
-    #         mode=mode,
-    #         fullgraph=False,  # 允许图分裂（兼容 MoE 路由）
-    #         dynamic=True,     # 支持动态文本长度
-    #     )
-        
-    #     if verbose:
-    #         print("  ✅ Language Model 编译包装器已设置！", flush=True)
-    
-    # except Exception as e:
-    #     if verbose:
-    #         print(f"  ⚠️ 整体编译失败: {e}")
-    #         print("  → 降级到逐层编译...")
-        
-        # 降级策略：逐层编译
         compiled_layers = 0
         failed_layers = []
         
@@ -358,67 +345,7 @@ def compile_bagel_single_gpu(model, mode="default", enable_taylorseer_compile=Fa
             print(f"  ⚠️ Language Model 编译失败: {e}")
             print("  → 保持 eager 模式")
     
-    # # ============================================================
-    # # 第2步：编译 Vision Encoder（次重要）
-    # # ============================================================
-    # if hasattr(model, 'vit_model') and model.vit_model is not None:
-    #     try:
-    #         if verbose:
-    #             print("\n[👁️ VISION ENCODER] 编译 SigLIP...")
-            
-    #         model.vit_model = torch.compile(
-    #             model.vit_model,
-    #             mode=mode,
-    #             fullgraph=False,
-    #             dynamic=False,  # Vision 输入形状固定
-    #         )
-            
-    #         if verbose:
-    #             print("  ✅ Vision Encoder 编译成功！")
-        
-    #     except Exception as e:
-    #         if verbose:
-    #             print(f"  ⚠️ Vision Encoder 编译失败: {e}")
-    #             print("  → 保持 eager 模式")
-    
-    # # ============================================================
-    # # 第3步：编译小型投影模块
-    # # ============================================================
-    # small_modules = {
-    #     'connector': 'Vision → LLM 投影',
-    #     'time_embedder': '时间步编码器',
-    #     'vae2llm': 'VAE → LLM 投影',
-    #     'llm2vae': 'LLM → VAE 投影',
-    # }
-    
-    # if verbose:
-    #     print("\n[🔗 PROJECTORS] 编译投影模块...")
-    
-    # compiled_modules = []
-    # for module_name, description in small_modules.items():
-    #     if hasattr(model, module_name) and getattr(model, module_name) is not None:
-    #         try:
-    #             setattr(
-    #                 model,
-    #                 module_name,
-    #                 torch.compile(
-    #                     getattr(model, module_name),
-    #                     mode=mode,
-    #                     fullgraph=True,  # 小模块可以全图编译
-    #                     dynamic=False,
-    #                 )
-    #             )
-    #             compiled_modules.append(description)
-    #         except Exception as e:
-    #             if verbose:
-    #                 print(f"  ⚠️ {description} 编译失败: {e}")
-    
-    # if verbose and compiled_modules:
-    #     print(f"  ✅ 成功编译: {', '.join(compiled_modules)}")
-    
-    # ============================================================
-    # 第4步：不编译的部分（保持灵活性）
-    # ============================================================
+
     skip_modules = [
         ('latent_pos_embed', '图像位置编码（动态形状）'),
         ('vit_pos_embed', 'Vision 位置编码（动态形状）'),
@@ -431,9 +358,7 @@ def compile_bagel_single_gpu(model, mode="default", enable_taylorseer_compile=Fa
         for _, desc in skip_modules:
             print(f"  • {desc}")
     
-    # ============================================================
-    # 第5步：清理和验证
-    # ============================================================
+
     if verbose:
         print("\n[🧹 CLEANUP] 清理临时资源...")
     
@@ -460,14 +385,14 @@ def apply_quantization_and_compile(model, enable_taylorseer_compile=False):
     print("[🧩 QUANTIZATION] 开始量化...")
     print("=" * 60)
     
-    print("[🧩 QUANT] Converting to FP8 quantization...")
-    quantize_(model, float8_dynamic_activation_float8_weight())
+    # print("[🧩 QUANT] Converting to FP8 quantization...")
+    # quantize_(model, float8_dynamic_activation_float8_weight())
     
-    print("[🧩 QUANT] Converting to channels_last memory format...")
-    if hasattr(model, 'language_model'):
-        model.language_model = model.language_model.to(memory_format=torch.channels_last)
+    # print("[🧩 QUANT] Converting to channels_last memory format...")
+    # if hasattr(model, 'language_model'):
+    #     model.language_model = model.language_model.to(memory_format=torch.channels_last)
     
-    print("[🧩 QUANT] 量化完成！")
+    # print("[🧩 QUANT] 量化完成！")
     
     if enable_taylorseer_compile:
         print("[🛠️ COMPILE] ⚠️  TaylorSeer 模式：使用编译（仅层级别）")
@@ -560,7 +485,7 @@ def warmup_model(inferencer, enable_taylorseer_compile=False):
         
         else:
             print(f"\n[🔥 WARMUP] TaylorSeer mode: warming up sub-module compilation...")
-            print(f"[🔥 WARMUP] Using fixed params: first_enhance=10, max_order=6, threshold=3")
+            print(f"[🔥 WARMUP] Using fixed params: taylor_first_enhance=10, taylor_max_order=6, taylor_fresh_threshold=3")
             
             # Text-to-Image with TaylorSeer
             print(f"[🔥 WARMUP]   - Text-to-Image path (41 steps, 1024x1024)...")
@@ -576,9 +501,9 @@ def warmup_model(inferencer, enable_taylorseer_compile=False):
                     cfg_interval=[0.4, 1.0],
                     timestep_shift=3.0,
                     enable_taylorseer=True,
-                    first_enhance=10,
-                    max_order=6,
-                    fresh_threshold=3,
+                    taylor_first_enhance=10,
+                    taylor_max_order=6,
+                    taylor_fresh_threshold=3,
                 )
             print(f"  ✅ Taylorseer T2I done in {time.time() - start:.1f}s")
             
@@ -598,9 +523,9 @@ def warmup_model(inferencer, enable_taylorseer_compile=False):
             reset_taylorseer_cache_simple(
                 model_to_clear,
                 num_steps=41,
-                fresh_threshold=3,
-                first_enhance=10,
-                max_order=6
+                taylor_fresh_threshold=3,
+                taylor_first_enhance=10,
+                taylor_max_order=6
             )
             
             # 强制同步并清理显存
@@ -628,9 +553,9 @@ def warmup_model(inferencer, enable_taylorseer_compile=False):
                     cfg_renorm_min=0.0,
                     cfg_renorm_type="text_channel",
                     enable_taylorseer=True,
-                    first_enhance=10,
-                    max_order=6,
-                    fresh_threshold=3,
+                    taylor_first_enhance=10,
+                    taylor_max_order=6,
+                    taylor_fresh_threshold=3,
                 )
             print(f"  ✅ Taylorseer I2I done in {time.time() - start:.1f}s")
 
@@ -646,15 +571,14 @@ def warmup_model(inferencer, enable_taylorseer_compile=False):
             reset_taylorseer_cache_simple(
                 model_to_clear,
                 num_steps=41,
-                fresh_threshold=3,
-                first_enhance=10,
-                max_order=6
+                taylor_fresh_threshold=3,
+                taylor_first_enhance=10,
+                taylor_max_order=6
             )
             print(f"  [🛁 CLEANUP] Memory after TaylorSeer warmup: {get_gpu_memory_stats_pytorch(0)}")
 
             print(f"  ✅ TaylorSeer warmup complete (both T2I and I2I paths compiled)")
-            print(f"  ℹ️  Compiled: attn + mlp sub-modules for both 'full' and 'Taylor' paths")
-        
+                    
         # 最终清理：只清理warmup的激活值，保留编译的计算图和kernel缓存
         # torch._inductor.config.fx_graph_cache=True 会把编译结果存在磁盘
         # empty_cache() 只释放未使用的显存，不会删除编译好的代码
@@ -689,41 +613,39 @@ def set_seed(seed: int):
         torch.backends.cudnn.benchmark = False
 
 
-def reset_taylorseer_cache_simple(model, num_steps=41, fresh_threshold=3, first_enhance=10, max_order=6):
-    """重置 TaylorSeer 缓存（Layer 级别缓存，用于全层编译策略）
-    
-    Args:
-        model: Bagel 模型（包含 language_model）
-        num_steps: 总推理步数
-        fresh_threshold: 新鲜阈值（每隔几步刷新一次缓存）
-        first_enhance: 首次增强步数（前 N 步使用 'full' 路径建立缓存）
-        max_order: 最大泰勒阶数（Taylor 展开的最高次数）
+def reset_taylorseer_cache_simple(model, num_steps=41, taylor_fresh_threshold=3, taylor_first_enhance=10, taylor_max_order=6):
     """
-    from modeling.cache_utils.taylorseer import cache_init
+    重置 TaylorSeer 缓存。
+    由于 load_model 已优化且 simple_cache_init 只创建字典，此处无需再进行 dtype 强制转换。
+    """
+    from modeling.cache_utils.taylorseer import simple_cache_init
     
-    if not (hasattr(model, 'language_model') and 
-            hasattr(model.language_model, 'model')):
+    # 1. 检查路径有效性
+    if not (hasattr(model, 'language_model') and hasattr(model.language_model, 'model')):
         return
     
     llm_model = model.language_model.model
-    
-    # cache_init 需要访问 self.language_model.model.layers 获取 layer 数量
-    # 创建临时上下文对象提供这个访问路径
+
+    # 2. 构造临时上下文以适配 simple_cache_init 的调用方式
+    # simple_cache_init 需要访问 self.language_model.model.layers
     class TempContext:
         def __init__(self, language_model):
             self.language_model = language_model
     
     temp_ctx = TempContext(model.language_model)
-    cache_dic, current = cache_init(
+    
+    # 3. 初始化缓存 (只生成字典配置，不涉及 Tensor 创建)
+    # 注意：这里直接使用 simple_cache_init，它比原先的 cache_init 更轻量
+    raw_cache_dic, current = simple_cache_init(
         temp_ctx, 
         num_steps=num_steps,
-        taylor_fresh_threshold=fresh_threshold,
-        taylor_first_enhance=first_enhance,
-        taylor_max_order=max_order
+        taylor_fresh_threshold=taylor_fresh_threshold,
+        taylor_first_enhance=taylor_first_enhance,
+        taylor_max_order=taylor_max_order
     )
     
-    # 只需在 Qwen2Model 级别分配 cache（全层编译不需要子模块访问）
-    llm_model.cache_dic = cache_dic
+    # 4. 直接赋值
+    llm_model.cache_dic = raw_cache_dic
     llm_model.current = current
 
 
@@ -751,9 +673,9 @@ def text_to_image(
         reset_taylorseer_cache_simple(
             inferencer.model,
             num_steps=kwargs.get("num_timesteps", 41),
-            fresh_threshold=kwargs.get("taylor_fresh_threshold", 3),
-            first_enhance=kwargs.get("taylor_first_enhance", 10),
-            max_order=kwargs.get("taylor_max_order", 6),
+            taylor_fresh_threshold=kwargs.get("taylor_fresh_threshold", 3),
+            taylor_first_enhance=kwargs.get("taylor_first_enhance", 10),
+            taylor_max_order=kwargs.get("taylor_max_order", 6),
         )
     
     inference_params = {
@@ -770,9 +692,9 @@ def text_to_image(
         "cfg_renorm_min": kwargs.get("cfg_renorm_min", 0.0),
         "cfg_renorm_type": kwargs.get("cfg_renorm_type", "global"),
         "enable_taylorseer": kwargs.get("enable_taylorseer", False),
-        "first_enhance": kwargs.get("taylor_first_enhance", 10),
-        "max_order": kwargs.get("taylor_max_order", 6),
-        "fresh_threshold": kwargs.get("taylor_fresh_threshold", 3),
+        "taylor_first_enhance": kwargs.get("taylor_first_enhance", 10),
+        "taylor_max_order": kwargs.get("taylor_max_order", 6),
+        "taylor_fresh_threshold": kwargs.get("taylor_fresh_threshold", 3),
     }
     
     start_time = time.time()
@@ -838,9 +760,9 @@ def edit_image(
         reset_taylorseer_cache_simple(
             inferencer.model,
             num_steps=kwargs.get("num_timesteps", 41),
-            fresh_threshold=kwargs.get("taylor_fresh_threshold", 3),
-            first_enhance=kwargs.get("taylor_first_enhance", 10),
-            max_order=kwargs.get("taylor_max_order", 6),
+            taylor_fresh_threshold=kwargs.get("taylor_fresh_threshold", 3),
+            taylor_first_enhance=kwargs.get("taylor_first_enhance", 10),
+            taylor_max_order=kwargs.get("taylor_max_order", 6),
         )
     
     inference_params = {
@@ -858,9 +780,9 @@ def edit_image(
         "cfg_renorm_min": kwargs.get("cfg_renorm_min", 0.0),
         "cfg_renorm_type": kwargs.get("cfg_renorm_type", "text_channel"),
         "enable_taylorseer": kwargs.get("enable_taylorseer", False),
-        "first_enhance": kwargs.get("taylor_first_enhance", 10),
-        "max_order": kwargs.get("taylor_max_order", 6),
-        "fresh_threshold": kwargs.get("taylor_fresh_threshold", 3),
+        "taylor_first_enhance": kwargs.get("taylor_first_enhance", 10),
+        "taylor_max_order": kwargs.get("taylor_max_order", 6),
+        "taylor_fresh_threshold": kwargs.get("taylor_fresh_threshold", 3),
     }
     
     start_time = time.time()
@@ -1108,7 +1030,7 @@ parser = argparse.ArgumentParser(description="BAGEL Model Gradio Interface")
 parser.add_argument("--server_name", type=str, default="127.0.0.1")
 parser.add_argument("--server_port", type=int, default=7860)
 parser.add_argument("--share", action="store_true")
-parser.add_argument("--model_path", type=str, default="models/BAGEL-7B-MoT")
+parser.add_argument("--model_path", type=str, default="/root/Miko_share/Kokoro/models/BAGEL-7B-MoT")
 args = parser.parse_args()
 
 print("="*60)

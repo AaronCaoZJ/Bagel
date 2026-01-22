@@ -747,6 +747,7 @@ class Bagel(PreTrainedModel):
         timesteps = timesteps[:-1]
 
         prev_record_step = None  # {'mha': {layer_idx: tensor_cpu}, 'ffn': {...}}
+        step_timings = []  # 记录每个step的耗时
 
         def make_hook(kind, layer_idx):
             def _hook(module, inp, out):
@@ -760,6 +761,9 @@ class Bagel(PreTrainedModel):
             return _hook
 
         for i, t in tqdm(enumerate(timesteps), total=len(timesteps)):
+            step_start_time = torch.cuda.Event(enable_timing=True)
+            step_end_time = torch.cuda.Event(enable_timing=True)
+            step_start_time.record()
             timestep = torch.tensor([t] * x_t.shape[0], device=x_t.device)
             hooks = []
             current_step = {'mha': {}, 'ffn': {}}
@@ -910,6 +914,12 @@ class Bagel(PreTrainedModel):
                     pass
 
             x_t = x_t - v_t.to(x_t.device) * dts[i] # velocity pointing from data to noise
+            
+            # 记录本step的耗时
+            step_end_time.record()
+            torch.cuda.synchronize()
+            step_duration = step_start_time.elapsed_time(step_end_time)  # 毫秒
+            step_timings.append((i, step_duration))
         
         if enable_taylorseer or enable_speca:
             # 打印与保存 step 日志（若存在）
@@ -926,8 +936,32 @@ class Bagel(PreTrainedModel):
                     for name, entries in logs:
                         print(f"  - {name}: {entries}")
                     
+                    # 打印每个step的耗时与模式
+                    print("\n[StepLog] Timing per step (with cache mode):")
+                    for name, entries in logs:
+                        print(f"  - {name}:")
+                        for step_idx, step_time in step_timings:
+                            # 找到对应step的模式
+                            mode = "unknown"
+                            for entry in entries:
+                                if entry[0] == step_idx:
+                                    mode = entry[1]
+                                    break
+                            print(f"    Step {step_idx:2d} ({mode:6s}): {step_time:6.2f} ms")
+                    
+                    # 计算统计信息
+                    print("\n[StepLog] Timing statistics:")
+                    full_times = [t for i, t in step_timings if any(e[0] == i and e[1] == 'full' for name, entries in logs for e in entries)]
+                    taylor_times = [t for i, t in step_timings if any(e[0] == i and e[1] == 'Taylor' for name, entries in logs for e in entries)]
+                    if full_times:
+                        print(f"  - Full steps: avg={sum(full_times)/len(full_times):.2f}ms, min={min(full_times):.2f}ms, max={max(full_times):.2f}ms, total={sum(full_times):.2f}ms")
+                    if taylor_times:
+                        print(f"  - Taylor steps: avg={sum(taylor_times)/len(taylor_times):.2f}ms, min={min(taylor_times):.2f}ms, max={max(taylor_times):.2f}ms, total={sum(taylor_times):.2f}ms")
+                    total_time = sum(t for _, t in step_timings)
+                    print(f"  - Total diffusion time: {total_time:.2f}ms ({total_time/1000:.2f}s)")
+                    
                     # 打印详细的error信息
-                    print("[StepLog] Error details per branch:")
+                    print("\n[StepLog] Error details per branch:")
                     for name, entries in logs:
                         error_steps = []
                         for entry in entries:
